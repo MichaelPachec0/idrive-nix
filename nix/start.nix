@@ -1,4 +1,4 @@
-{ lib, writeShellApplication, coreutils, tzdata, idrive-client }:
+{ writeShellApplication, coreutils, tzdata, idrive-client }:
 
 {
   mkPrepare = { stateDir, timeZone }:

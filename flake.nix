@@ -70,6 +70,9 @@
           prepare-script-bad-timezone = pkgs.callPackage ./nix/tests/prepare-script-bad-timezone.nix {
             inherit idrive-client;
           };
+          prepare-script-version-gate = pkgs.callPackage ./nix/tests/prepare-script-version-gate.nix {
+            inherit idrive-client;
+          };
         } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # idrive-client_3_8_0 only exists for x86_64-linux; see the same
           # guard on the package itself in the packages output above.
