@@ -4,7 +4,11 @@
 set -euo pipefail
 
 VERSION_URL="https://www.idrivedownloads.com/downloads/linux/download-for-linux/version-linux.js"
-SOURCES="$(dirname "$0")/sources.json"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "Error: not inside a git checkout; cannot locate nix/sources.json" >&2
+  exit 1
+}
+SOURCES="$repo_root/nix/sources.json"
 
 version_js="$(curl -fsSL "$VERSION_URL")"
 version="$(echo "$version_js" \

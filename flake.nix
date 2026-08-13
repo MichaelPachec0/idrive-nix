@@ -35,7 +35,7 @@
           pkgs = pkgsFor system;
           update = pkgs.writeShellApplication {
             name = "idrive-update";
-            runtimeInputs = with pkgs; [ curl jq gnused gnugrep coreutils nix ];
+            runtimeInputs = with pkgs; [ curl jq gnused gnugrep coreutils nix git ];
             text = builtins.readFile ./nix/update.sh;
           };
         in
