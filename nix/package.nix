@@ -188,43 +188,96 @@ stdenv.mkDerivation (finalAttrs: {
     vendorLib="$root/bin/Idrivelib/dependencies/python/lib"
 
     # The update logic is compiled into the static bin/idrive binary and is
-    # reachable only through this flag. Assert the flag still exists in the
-    # binary, so an upstream rename fails the build rather than silently
-    # leaving the updater reachable.
-    if ! grep -qa -- '--check-update' "$root/bin/idrive"; then
-      echo "the --check-update flag was not found in bin/idrive" >&2
-      echo "upstream may have renamed it; re-run the phase 0 string analysis" >&2
-      exit 1
-    fi
+    # reachable only through these ARGV[0] tokens (checked below against the
+    # real, not-yet-moved binary) plus the --utilities UPDATEFROMDASHBOARD
+    # positional form. Assert every one of them still exists in the binary,
+    # so an upstream rename fails the build rather than silently leaving the
+    # wrapper matching a dead string while the updater stays reachable.
+    for token in \
+      '--check-update' '--handle-update' '--launch-update' \
+      "'-C'=>" '--utilities' 'UPDATEFROMDASHBOARD'
+    do
+      if ! grep -qa -- "$token" "$root/bin/idrive"; then
+        echo "the update-related token '$token' was not found in bin/idrive" >&2
+        echo "upstream may have renamed it; re-run the phase 0 string analysis" >&2
+        exit 1
+      fi
+    done
 
     mkdir -p "$out/bin"
+
+    # Move the real binary aside and install the wrapper AT $root/bin/idrive
+    # itself, rather than only at $out/bin/idrive. The client resolves its
+    # own path from $0 (loadAppPath -> getAbsPath($0) -> dirname), and three
+    # internal call sites build self-invocation update commands from that
+    # resolved path: scheduleAutoUpdateCRON (writes a crontab line calling
+    # "<binary> --launch-update silent", run unattended during setup),
+    # doDirectAppUpdate (the dashboard's direct-update path), and
+    # isUpdateAvailable (backgrounds a "--check-update checkUpdate" call).
+    # If the real binary stayed at $root/bin/idrive, those self-invocations
+    # would resolve straight to it and bypass a wrapper sitting only at
+    # $out/bin. Occupying $root/bin/idrive with the wrapper closes that.
+    mv "$root/bin/idrive" "$root/bin/.idrive-unwrapped"
 
     # Argv-intercepting wrapper. The client's in-place updater rewrites its
     # own install tree, which is read-only here, and migrates the user profile
     # schema; a partially applied migration leaves a profile the client cannot
     # parse. Refusing before the binary runs is what makes that state
     # unreachable rather than merely unlikely.
-    cat > "$out/bin/idrive" <<EOF
+    cat > "$root/bin/idrive" <<EOF
 #!${bash}/bin/bash
 set -euo pipefail
 
-for arg in "\$@"; do
-  case "\$arg" in
-    --check-update|--handle-update|--launch-update)
+# The client's own dispatch is an exact hash lookup on \$ARGV[0] (not
+# Getopt::Long), so only the first argument needs checking here; scanning
+# every argument would misfire on, say, a backup path that happens to
+# contain one of these strings as a substring. Abbreviations
+# (--check-upd) and --check-update=value are not holes either: the exact
+# hash lookup falls through to unknown_option for those, it does not reach
+# chkupd. -C is a short alias for --check-update, translated by the
+# binary's own %shorttocmd table before dispatch, so it is blocked
+# identically to the long form.
+first="\''${1:-}"
+case "\$first" in
+  --check-update|--handle-update|--launch-update|-C)
+    echo "iDrive is managed by Nix; this build will not self-update." >&2
+    echo "To pick up a new client version, bump the pin in nix/sources.json" >&2
+    echo "and rebuild, or run 'nix run .#update'." >&2
+    exit 1
+    ;;
+esac
+
+# A fourth, positional entry point: the dashboard spawns
+# "<binary> --utilities UPDATEFROMDASHBOARD dashboard &", which reaches the
+# same doDirectAppUpdate() as --launch-update. Not expressible as a single
+# -token case match, so checked separately.
+if [ "\$first" = "--utilities" ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = "UPDATEFROMDASHBOARD" ]; then
       echo "iDrive is managed by Nix; this build will not self-update." >&2
-      echo "Update the flake input and rebuild instead." >&2
+      echo "To pick up a new client version, bump the pin in nix/sources.json" >&2
+      echo "and rebuild, or run 'nix run .#update'." >&2
       exit 1
-      ;;
-  esac
-done
+    fi
+  done
+fi
 
 export LD_LIBRARY_PATH="$vendorLib\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export PATH="${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
-exec "$root/bin/idrive" "\$@"
+# exec -a keeps \$0 (and therefore the client's own loadAppPath/
+# getBinaryPath resolution) pointed at this wrapper's own location, so
+# self-invocations the client builds internally resolve back to this
+# wrapper instead of around it, at $root/bin/.idrive-unwrapped.
+exec -a "$root/bin/idrive" "$root/bin/.idrive-unwrapped" "\$@"
 EOF
-    chmod +x "$out/bin/idrive"
+    chmod +x "$root/bin/idrive"
+
+    # The public entrypoint is a symlink to the wrapper that now occupies
+    # $root/bin/idrive, so both the documented $out/bin/idrive path and the
+    # client's own internally resolved path point at the same wrapper.
+    ln -s "$root/bin/idrive" "$out/bin/idrive"
 
     # idevsutil needs environment only, so makeWrapper is enough.
     for prog in idevsutil idevsutil_dedup idevsutil_dedup_sync idevsutil_sync; do

@@ -8,12 +8,17 @@ runCommand "idrive-package-runs" { } ''
   #
   # Streams are captured separately and the version assertion is checked
   # only against stdout, anchored to a whole line. idrive --version prints
-  # its version to stdout with nothing else on that stream; the Perl
-  # warnings from AppConfig's uname/hostname/whoami probes (expected here,
-  # since env -i leaves no PATH for those commands - that gap belongs to a
-  # later wrapper task, not this one) land on stderr. An unanchored grep
-  # over combined output would pass on a stray dotted number in a warning
-  # even if --version stopped printing a real version, so it is not used.
+  # its version to stdout with nothing else on that stream; Perl warnings
+  # land on stderr. An unanchored grep over combined output would pass on a
+  # stray dotted number in a warning even if --version stopped printing a
+  # real version, so it is not used.
+  #
+  # warnings.txt still carries one expected line here:
+  # `Use of uninitialized value $ENV{"HOME"} ...`. That one is env -i's own
+  # doing (it deliberately strips HOME) and is not a missing-PATH-command
+  # problem the wrapper could fix, unlike the uname/hostname/whoami
+  # Can't-exec warnings the wrapper's PATH now eliminates. Left visible on
+  # purpose rather than fabricating a HOME value to silence it.
   env -i "${idrive-client}/bin/idrive" --version > version.txt 2> warnings.txt || {
     echo "idrive --version failed:"; cat version.txt warnings.txt; exit 1;
   }
