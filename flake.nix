@@ -43,6 +43,15 @@
           update = { type = "app"; program = "${update}/bin/idrive-update"; };
         });
 
-      checks = forAllSystems (system: { });
+      checks = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          idrive-client = self.packages.${system}.idrive-client;
+        in
+        {
+          package-layout = pkgs.callPackage ./nix/tests/package-layout.nix {
+            inherit idrive-client;
+          };
+        });
     };
 }
