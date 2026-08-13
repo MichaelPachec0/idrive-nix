@@ -95,11 +95,34 @@ export LD_LIBRARY_PATH="${vendorLib}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export PATH="${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
-# exec -a keeps \$0 (and therefore the client's own loadAppPath/
-# getBinaryPath resolution) pointed at this wrapper's own location, so
-# self-invocations the client builds internally resolve back to this
-# wrapper instead of around it, at ${root}/bin/.idrive-unwrapped.
-exec -a "${root}/bin/idrive" "${root}/bin/.idrive-unwrapped" "\$@"
+# exec -a propagates the path this wrapper was itself invoked as (\$0),
+# rather than a path hardcoded to this build. Two client-side requirements
+# both depend on that:
+#
+# 1. The client's own cron/service entry point refuses to run at all
+#    unless \$0 names a filesystem symlink ("unless(-l \$0){...
+#    saferetreat('you_cant_run_supporting_service')}", confirmed by
+#    extracting that guard from the real binary). \$out/bin/idrive is a
+#    symlink to this wrapper; a hardcoded \$0 pointing at this wrapper's own
+#    regular-file location on disk is not, and always tripped that guard,
+#    making --cron unusable through any entry point this package exposes.
+#    The pre-Nix Docker image (see git history's start.sh) worked around the
+#    exact same requirement by symlinking /etc/idrivecron to the real binary
+#    and invoking --cron through that symlink, never through the plain path.
+#
+# 2. loadAppPath -> getAbsPath(\$0) -> dirname must still resolve to a
+#    directory that contains this same protective wrapper, so self-
+#    invocations the client builds internally (scheduleAutoUpdateCRON,
+#    doDirectAppUpdate, isUpdateAvailable) stay routed through it instead of
+#    reaching ${root}/bin/.idrive-unwrapped directly. getAbsPath resolves
+#    symlinks (it is Perl's abs_path/realpath, not a literal string), so
+#    even when \$0 is a symlink such as \$out/bin/idrive, dirname(getAbsPath
+#    (\$0)) still lands on ${root}/bin - this wrapper's own directory - not
+#    on the symlink's own location. Every public entry point this package
+#    ships (\$out/bin/idrive, ${root}/bin/idrive itself, and anything
+#    environment.systemPackages links to either of those) resolves the same
+#    way; there is no path to .idrive-unwrapped that bypasses this wrapper.
+exec -a "\$0" "${root}/bin/.idrive-unwrapped" "\$@"
 EOF
     chmod +x "${root}/bin/idrive"
 

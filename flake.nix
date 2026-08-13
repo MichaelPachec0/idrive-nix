@@ -64,6 +64,9 @@
           package-no-selfupdate = pkgs.callPackage ./nix/tests/package-no-selfupdate.nix {
             inherit idrive-client;
           };
+          package-cron-guard = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
+            inherit idrive-client;
+          };
           prepare-script = pkgs.callPackage ./nix/tests/prepare-script.nix {
             inherit idrive-client;
           };
@@ -83,6 +86,9 @@
             idrive-client = self.packages.${system}.idrive-client_3_8_0;
           };
           package-no-selfupdate-380 = pkgs.callPackage ./nix/tests/package-no-selfupdate.nix {
+            idrive-client = self.packages.${system}.idrive-client_3_8_0;
+          };
+          package-cron-guard-380 = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
             idrive-client = self.packages.${system}.idrive-client_3_8_0;
           };
         });
