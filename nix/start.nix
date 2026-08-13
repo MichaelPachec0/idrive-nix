@@ -34,9 +34,17 @@
         # requires bind mount users to touch it by hand first.
         [ -f "$state/idrivecrontab.json" ] || : > "$state/idrivecrontab.json"
 
-        # Timezone. Backup schedules and log timestamps follow it.
-        if [ -f "${tzdata}/share/zoneinfo/${timeZone}" ]; then
-          export TZ="${timeZone}"
+        # Validate the timezone eagerly so a typo in services.idrive.timeZone
+        # (or the image's build-time timeZone) surfaces here, at prepare
+        # time, rather than silently producing backups stamped in UTC.
+        # Runtime TZ delivery to the running daemon is the caller's job, not
+        # this script's: the NixOS module sets it via the systemd unit's
+        # environment, and the image sets it via its container env. Do not
+        # re-add an `export TZ` here: it would die with this short-lived
+        # process before the daemon ever started.
+        if [ ! -f "${tzdata}/share/zoneinfo/${timeZone}" ]; then
+          echo "idrive-prepare: unknown timezone '${timeZone}': no such zoneinfo file ${tzdata}/share/zoneinfo/${timeZone}" >&2
+          exit 1
         fi
       '';
     };
