@@ -76,6 +76,10 @@
           prepare-script-version-gate = pkgs.callPackage ./nix/tests/prepare-script-version-gate.nix {
             inherit idrive-client;
           };
+          native = pkgs.callPackage ./nix/tests/native.nix {
+            nixosModule = self.nixosModules.idrive;
+            inherit idrive-client;
+          };
         } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # idrive-client_3_8_0 only exists for x86_64-linux; see the same
           # guard on the package itself in the packages output above.

@@ -1,0 +1,67 @@
+{ pkgs, nixosModule, idrive-client }:
+
+pkgs.testers.runNixOSTest {
+  name = "idrive-native";
+
+  nodes.machine = { config, pkgs, ... }: {
+    imports = [ nixosModule ];
+    # allowUnfree is already set on the pkgs instance runNixOSTest is called
+    # with (see flake.nix's pkgsFor), and nixpkgs.config is read-only for a
+    # test node once that instance is fixed. Redeclaring it here conflicts
+    # rather than being redundant.
+    virtualisation.diskSize = 4096;
+
+    systemd.tmpfiles.rules = [ "d /srv/data 0755 root root -" ];
+
+    services.idrive = {
+      enable = true;
+      package = idrive-client;
+      backupPaths = [ "/srv/data" ];
+      legacySourceLinks = true;
+      timeZone = "Etc/UTC";
+    };
+  };
+
+  testScript = ''
+    machine.wait_for_unit("multi-user.target")
+
+    # idrive --cron exits cleanly, quickly, and on its own the moment it
+    # finds no linked IDrive account: that is a real precondition check
+    # inside the client itself (traced during the Task 8 investigation),
+    # not a bug here, and not something any systemd/module setting changes.
+    # A backup agent with no account legitimately has nothing to run. CI
+    # has no IDrive credentials and never will, so this test cannot assert
+    # the unit stays "active" the way a real, account-linked deployment
+    # eventually would. Do NOT restore a wait_for_unit("idrive.service")
+    # here: that assertion can never pass in this environment, and someone
+    # re-adding it will just be reintroducing a permanently red check.
+    # Instead assert the part that is actually true: the unit starts
+    # cleanly and stops with Result=success, not a crash or a refusal.
+    machine.succeed("systemctl start idrive.service")
+    machine.wait_until_succeeds(
+        "systemctl show idrive.service --property=Result --value | grep -qx success"
+    )
+
+    # ExecStartPre (the prepare step) ran: state directory created and seeded.
+    machine.succeed("test -d /var/lib/idrive")
+    machine.succeed("test -f /var/lib/idrive/idrivecrontab.json")
+    machine.succeed("test -f /var/lib/idrive/.idrive-version")
+
+    # The wrapped client is on PATH for interactive account setup.
+    machine.succeed("idrive --version")
+
+    # Self-update must refuse, not partially apply. This is the end-to-end
+    # proof of the whole design: the wrapped binary from
+    # environment.systemPackages, invoked exactly as an operator would.
+    machine.fail("idrive --check-update")
+
+    # Existing backup sets reference /source/N. legacySourceLinks keeps a
+    # migrated profile working without re-pointing every set by hand.
+    machine.succeed("test -L /source/1")
+    machine.succeed("readlink /source/1 | grep -x /srv/data")
+
+    # The dump directory reported as growing unbounded upstream is its own
+    # path, so it can be observed and cleaned independently of state.
+    machine.succeed("test -d /var/lib/idrive/CDPDBDUMP")
+  '';
+}
