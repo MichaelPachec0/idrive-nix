@@ -7,6 +7,7 @@
 , tzdata
 , callPackage
 , idrive-client
+, timeZone ? "Etc/UTC"
 }:
 
 let
@@ -14,8 +15,7 @@ let
 
   startLib = callPackage ./start.nix { inherit idrive-client; };
   prepare = startLib.mkPrepare {
-    inherit stateDir;
-    timeZone = "Etc/UTC";
+    inherit stateDir timeZone;
   };
 
   # The image runs the same prepare step the native systemd unit runs as
@@ -31,18 +31,15 @@ let
       # backup daemon) defaults to "idrive --cron"; an explicit override
       # (e.g. `idrive --version` for interactive diagnostics, as podman
       # passes it: CMD's own first token is already the program name, not
-      # just its arguments) is used as-is. Either way "idrive" resolves
-      # through PATH (runtimeInputs above), not a hardcoded absolute path:
-      # nix/wrappers.nix's argv0 resolution has a bare-word arm that runs
-      # `command -v` on a slash-less $0 and lands on
-      # ${idrive-client}/bin/idrive, which IS a symlink, satisfying the
-      # client's own `unless(-l $0)` guard on --cron. That fix lives once,
-      # in the wrapper, rather than duplicated as an absolute-path
-      # workaround at every call site that might invoke --cron (this
-      # entrypoint, the NixOS module's ExecStart, or an interactive shell) -
-      # see nix/tests/package-cron-guard-bareword.nix for the regression
-      # test. set -- (not a plain default in the exec line) is deliberate:
-      # "$@" must become exactly ("idrive" "--cron"), the same shape podman
+      # just its arguments) is used as-is. Either way "idrive" is resolved
+      # through PATH (runtimeInputs above) by the shell running this exec,
+      # which passes the resulting absolute path to execve(2); nothing
+      # about that path is slash-less by the time the wrapper's own $0
+      # inspection (nix/wrappers.nix) sees it, so the wrapper's ordinary
+      # absolute-path handling satisfies the client's `unless(-l $0)` guard
+      # on --cron here the same way it does for every other entry point.
+      # set -- (not a plain default in the exec line) is deliberate: "$@"
+      # must become exactly ("idrive" "--cron"), the same shape podman
       # would hand us for an explicit override, not "idrive" plus a
       # separately-quoted "--cron" tacked onto whatever "$@" already was.
       if [ "$#" -eq 0 ]; then
@@ -54,7 +51,10 @@ let
 in
 dockerTools.buildLayeredImage {
   name = "idrive-docker";
-  tag = "latest";
+  # Not "latest": loading successive builds under a fixed tag lets a
+  # container backend keep running a stale image after the underlying
+  # store path has changed, with no signal that anything is out of date.
+  tag = idrive-client.version;
 
   # vim, nano, unzip, iputils-ping, iproute2 and cron are deliberately absent.
   # The client runs its own scheduler, and a backup agent has no business
@@ -71,7 +71,18 @@ dockerTools.buildLayeredImage {
     Entrypoint = [ "${launcher}/bin/idrive-entrypoint" ];
     Env = [
       "LC_ALL=en_US.UTF-8"
-      "TZ=Etc/UTC"
+      "TZ=${timeZone}"
+      # dockerTools.buildLayeredImage symlinks tzdata's top-level share/
+      # directory into the image root, giving /share/zoneinfo; glibc's own
+      # timezone lookup instead checks /etc/localtime or, absent that,
+      # /usr/share/zoneinfo, neither of which exists here. Without TZDIR
+      # pointed at the actual zoneinfo location, TZ is silently ignored:
+      # an operator setting -e TZ=Europe/Berlin gets backups stamped UTC
+      # with no error, exactly the failure nix/start.nix's timezone
+      # validation exists to prevent (that validation only confirms the
+      # zoneinfo file exists at build/prepare time; it does not make the
+      # running process able to find it without this).
+      "TZDIR=${tzdata}/share/zoneinfo"
       "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
     ];
     Volumes = { "${stateDir}" = { }; };

@@ -103,25 +103,27 @@ export TERM="\''${TERM:-xterm}"
 # whole point is to preserve whatever \$0 actually is, symlink and all, not
 # collapse it to its target.
 #
-# A bare word (no slash at all, e.g. \$0 == "idrive" from a caller that
-# invoked us through PATH) is a fourth case, distinct from both the
-# absolute and the slash-containing-relative ones: prepending \$PWD to it
-# fabricates "\$PWD/idrive", a path that generally does not exist, is
-# never a symlink, and trips the client's own \`unless(-l \$0)\` guard on
-# --cron below regardless of how this wrapper itself was actually found.
-# Resolve it through PATH instead with \`command -v\`, the same mechanism
-# the shell itself just used to find this wrapper: for a package on PATH
-# that lookup returns <pkg>/bin/idrive, which IS a symlink (this file's
-# own public entry point), satisfying the guard exactly like the
-# absolute-path case. \`|| true\` plus the emptiness check keep this safe
-# under \`set -eu\` if PATH lookup finds nothing (falls back to the old,
-# possibly-guard-tripping \$PWD/\$0 behavior rather than aborting the
-# wrapper outright).
+# For a \`#!\`-interpreted script such as this wrapper, \$0 is not whatever
+# token the caller typed; the kernel's binfmt_script handling discards the
+# caller's original argv[0] and splices in the exact path that was passed
+# to execve(2). A shell invoking us via a PATH lookup (a bare word with no
+# slash, e.g. \`idrive --cron\`) resolves that word to an absolute path
+# before calling execve, so \$0 here is already absolute in that case, same
+# as an explicit absolute or ./relative invocation. There is no bare-word
+# case to handle at this \$0-inspection point: the only way to see a
+# slash-less \$0 here is an interpreter-argument invocation such as
+# \`bash idrive\` (the interpreter, not the kernel, sets argv[0] then, from
+# its own literal command-line argument) - not a call pattern any part of
+# this codebase uses to reach --cron. (Verified twice: once by testing the
+# actual pre-fix wrapper's behavior against a PATH-only bare-word
+# invocation, and once by re-deriving the mechanism from binfmt_script
+# itself. An earlier version of this comment claimed a bare-word \$0 case
+# existed here and added a \`command -v\` fallback for it; that diagnosis
+# was wrong and has been reverted. Recorded here so the next investigation
+# of this guard does not repeat it.)
 case "\$0" in
-  /*)   idriveArgv0="\$0" ;;
-  */*)  idriveArgv0="\$PWD/\$0" ;;
-  *)    idriveArgv0="\$(command -v "\$0" 2>/dev/null || true)"
-        [ -n "\$idriveArgv0" ] || idriveArgv0="\$PWD/\$0" ;;
+  /*) idriveArgv0="\$0" ;;
+  *) idriveArgv0="\$PWD/\$0" ;;
 esac
 
 # exec -a propagates idriveArgv0 (this wrapper's own invocation path, made
