@@ -95,9 +95,21 @@ export LD_LIBRARY_PATH="${vendorLib}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export PATH="${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
-# exec -a propagates the path this wrapper was itself invoked as (\$0),
-# rather than a path hardcoded to this build. Two client-side requirements
-# both depend on that:
+# Make \$0 absolute without resolving through any symlink: loadAppPath runs
+# during the client's own init, before any chdir, so a relative \$0 is safe
+# today, but leaving it relative would make resolution depend on the
+# caller's cwd instead of being immune to it the way the old hardcoded
+# argv0 was. Prepending \$PWD, not realpath/readlink, is deliberate: the
+# whole point is to preserve whatever \$0 actually is, symlink and all, not
+# collapse it to its target.
+case "\$0" in
+  /*) idriveArgv0="\$0" ;;
+  *) idriveArgv0="\$PWD/\$0" ;;
+esac
+
+# exec -a propagates idriveArgv0 (this wrapper's own invocation path, made
+# absolute above without resolving any symlink), rather than a path
+# hardcoded to this build. Two client-side requirements both depend on that:
 #
 # 1. The client's own cron/service entry point refuses to run at all
 #    unless \$0 names a filesystem symlink ("unless(-l \$0){...
@@ -109,6 +121,11 @@ export TERM="\''${TERM:-xterm}"
 #    The pre-Nix Docker image (see git history's start.sh) worked around the
 #    exact same requirement by symlinking /etc/idrivecron to the real binary
 #    and invoking --cron through that symlink, never through the plain path.
+#    That still applies here: --cron specifically must be invoked through a
+#    symlink such as \$out/bin/idrive. ${root}/bin/idrive is this wrapper's
+#    own regular-file location, not a symlink, so calling --cron by that
+#    exact path directly still trips the guard even though the wrapper
+#    itself runs fine there for every other argument.
 #
 # 2. loadAppPath -> getAbsPath(\$0) -> dirname must still resolve to a
 #    directory that contains this same protective wrapper, so self-
@@ -122,7 +139,7 @@ export TERM="\''${TERM:-xterm}"
 #    ships (\$out/bin/idrive, ${root}/bin/idrive itself, and anything
 #    environment.systemPackages links to either of those) resolves the same
 #    way; there is no path to .idrive-unwrapped that bypasses this wrapper.
-exec -a "\$0" "${root}/bin/.idrive-unwrapped" "\$@"
+exec -a "\$idriveArgv0" "${root}/bin/.idrive-unwrapped" "\$@"
 EOF
     chmod +x "${root}/bin/idrive"
 

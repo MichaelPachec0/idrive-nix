@@ -16,8 +16,8 @@ runCommand "idrive-cron-symlink-guard" { } ''
   # asserts the client's symlink guard does not fire, which is the specific
   # failure mode the wrapper fix addresses and the only part of --cron's
   # behavior observable without live credentials.
-  timeout 10 env -i "${idrive-client}/bin/idrive" --cron > out.txt 2>&1
-  status=$?
+  status=0
+  timeout 10 env -i "${idrive-client}/bin/idrive" --cron > out.txt 2>&1 || status=$?
   # 0: client ran and exited on its own (expected without a linked account).
   # 124: timeout fired, meaning --cron kept running past the guard check
   # instead of refusing outright - also a pass for this specific assertion.

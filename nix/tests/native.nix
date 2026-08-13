@@ -27,19 +27,29 @@ pkgs.testers.runNixOSTest {
 
     # idrive --cron exits cleanly, quickly, and on its own the moment it
     # finds no linked IDrive account: that is a real precondition check
-    # inside the client itself (traced during the Task 8 investigation),
-    # not a bug here, and not something any systemd/module setting changes.
-    # A backup agent with no account legitimately has nothing to run. CI
-    # has no IDrive credentials and never will, so this test cannot assert
-    # the unit stays "active" the way a real, account-linked deployment
-    # eventually would. Do NOT restore a wait_for_unit("idrive.service")
-    # here: that assertion can never pass in this environment, and someone
-    # re-adding it will just be reintroducing a permanently red check.
-    # Instead assert the part that is actually true: the unit starts
-    # cleanly and stops with Result=success, not a crash or a refusal.
+    # inside the client itself, not a bug here, and not something any
+    # systemd/module setting changes. A backup agent with no account
+    # legitimately has nothing to run. CI has no IDrive credentials and
+    # never will, so this test cannot assert the unit stays "active" the
+    # way a real, account-linked deployment eventually would. Do NOT
+    # restore a wait_for_unit("idrive.service") here: that assertion can
+    # never pass in this environment, and someone re-adding it will just be
+    # reintroducing a permanently red check. Instead assert the part that
+    # is actually true: the unit starts cleanly and stops with
+    # Result=success, not a crash, and is not left in a failed state.
     machine.succeed("systemctl start idrive.service")
     machine.wait_until_succeeds(
         "systemctl show idrive.service --property=Result --value | grep -qx success"
+    )
+    machine.fail("systemctl is-failed idrive.service")
+
+    # The only end-to-end exercise of the module's own ExecStart argv0: if
+    # this ever prints the client's symlink-guard refusal (see
+    # nix/wrappers.nix), the unit is invoking --cron through a path that
+    # is not a symlink, and Result=success alone would not catch it, since
+    # the guard refusal also exits 0.
+    machine.fail(
+        "journalctl -u idrive.service | grep -q 'Launch the service using service manager'"
     )
 
     # ExecStartPre (the prepare step) ran: state directory created and seeded.
@@ -57,11 +67,10 @@ pkgs.testers.runNixOSTest {
 
     # Existing backup sets reference /source/N. legacySourceLinks keeps a
     # migrated profile working without re-pointing every set by hand.
+    # test -L plus readlink only compares the link text; test -d confirms
+    # it actually resolves to the backup path, not just names it.
     machine.succeed("test -L /source/1")
     machine.succeed("readlink /source/1 | grep -x /srv/data")
-
-    # The dump directory reported as growing unbounded upstream is its own
-    # path, so it can be observed and cleaned independently of state.
-    machine.succeed("test -d /var/lib/idrive/CDPDBDUMP")
+    machine.succeed("test -d /source/1")
   '';
 }

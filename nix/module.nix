@@ -22,7 +22,14 @@ in
   options.services.idrive = {
     enable = mkEnableOption "the IDrive Linux backup client";
 
-    package = mkPackageOption pkgs "idrive-client" { };
+    package = mkPackageOption pkgs "idrive-client" {
+      extraDescription = ''
+        This package is not in nixpkgs; it comes from this flake's own
+        `overlays.default`, or must be set explicitly. Enabling this module
+        without applying the overlay leaves the default unresolvable and
+        fails evaluation with an "attribute 'idrive-client' missing" error.
+      '';
+    };
 
     backend = mkOption {
       type = types.enum [ "native" "container" ];
@@ -46,7 +53,8 @@ in
       description = ''
         A backup agent can only read what its user can read. root is the
         default for whole-system backups; a dedicated user is safer when the
-        backup set is narrow.
+        backup set is narrow. This module does not create that user: set
+        users.users.<name> yourself before pointing this option at it.
       '';
     };
 
@@ -78,15 +86,6 @@ in
         working after migrating to the native backend.
       '';
     };
-
-    dumpDir = mkOption {
-      type = types.path;
-      default = "${cfg.stateDir}/CDPDBDUMP";
-      description = ''
-        Where the client writes its CDP database dumps. Separated out because
-        unbounded growth here has been reported to fill disks.
-      '';
-    };
   };
 
   config = mkIf (cfg.enable && cfg.backend == "native") {
@@ -94,7 +93,6 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.dumpDir} 0700 ${cfg.user} ${cfg.group} -"
     ] ++ lib.optionals cfg.legacySourceLinks sourceLinks;
 
     systemd.services.idrive = {
@@ -115,19 +113,35 @@ in
         User = cfg.user;
         Group = cfg.group;
         ExecStartPre = "${prepare}/bin/idrive-prepare";
+        # idrive --cron exits 0 immediately, before doing any sustained
+        # work, until an IDrive account has been linked (a precondition
+        # check inside the client itself, not a fault in this unit). On a
+        # fresh deployment this unit therefore starts, exits cleanly, and
+        # sits inactive; Restart=on-failure will not bring it back up after
+        # the operator finishes account setup, since that exit is not a
+        # failure. A manual `systemctl restart idrive` is required once
+        # setup completes.
         ExecStart = "${cfg.package}/bin/idrive --cron";
 
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = "read-only";
         PrivateTmp = true;
-        ReadWritePaths = [ cfg.stateDir cfg.dumpDir ];
+        ReadWritePaths = [ cfg.stateDir ];
         ReadOnlyPaths = cfg.backupPaths;
       }
       # StateDirectory is always relative to /var/lib, so it only applies
       # when stateDir keeps its default. A custom path is handled by the
-      # tmpfiles rule above plus ReadWritePaths.
-      // lib.optionalAttrs usesDefaultStateDir { StateDirectory = "idrive"; };
+      # tmpfiles rule above plus ReadWritePaths. StateDirectoryMode is set
+      # explicitly because StateDirectory otherwise carries systemd's own
+      # 0755 default, which systemd reconciles at unit start regardless of
+      # what the tmpfiles rule above asked for - systemd wins that
+      # disagreement, and this directory holds user_profile, which contains
+      # account credentials.
+      // lib.optionalAttrs usesDefaultStateDir {
+        StateDirectory = "idrive";
+        StateDirectoryMode = "0700";
+      };
     };
   };
 }
