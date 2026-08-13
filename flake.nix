@@ -64,6 +64,9 @@
           package-no-selfupdate = pkgs.callPackage ./nix/tests/package-no-selfupdate.nix {
             inherit idrive-client;
           };
+          prepare-script = pkgs.callPackage ./nix/tests/prepare-script.nix {
+            inherit idrive-client;
+          };
         } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # idrive-client_3_8_0 only exists for x86_64-linux; see the same
           # guard on the package itself in the packages output above.
