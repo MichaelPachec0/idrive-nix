@@ -4,6 +4,12 @@
 , gnutar
 , gzip
 , gawk
+, autoPatchelfHook
+, expat
+, popt
+, zlib
+, bzip2
+, xz
 , version ? "3.14.0"
 }:
 
@@ -76,7 +82,41 @@ stdenv.mkDerivation (finalAttrs: {
   # layout and a populated PATH. Its payload is located the same way the
   # installer locates it, by the __idrive__ marker line, which is stable
   # across versions in a way a raw gzip-magic scan is not.
-  nativeBuildInputs = [ gnutar gzip gawk ];
+  nativeBuildInputs = [ gnutar gzip gawk autoPatchelfHook ];
+
+  # Confirmed in phase 0 from ldd against the extracted binaries, plus two
+  # more found by autoPatchelfHook itself against vendored Python C
+  # extensions phase 0 did not individually ldd: bzip2 (libbz2.so.1.0, wanted
+  # by _bz2.cpython-35m-x86_64-linux-gnu.so) and xz (liblzma.so.5, wanted by
+  # _lzma.cpython-35m-x86_64-linux-gnu.so). Grow this list only from
+  # autoPatchelfHook's own missing-dependency output; do not add openssl,
+  # which cannot satisfy the vendored 1.0.0 SONAMEs.
+  buildInputs = [
+    (lib.getLib stdenv.cc.cc)
+    expat
+    popt
+    zlib
+    bzip2
+    xz
+  ];
+
+  # The vendored Python extensions and the dashboard reference libraries that
+  # exist only inside the bundle, including OpenSSL 1.0.0. The hook must
+  # resolve those against the output itself rather than against nixpkgs.
+  appendRunpaths = [
+    "${placeholder "out"}/opt/IDriveForLinux/bin/Idrivelib/dependencies/python/lib"
+  ];
+
+  # readline.cpython-35m-x86_64-linux-gnu.so (Python's stdlib readline
+  # module, used for interactive line editing) wants libreadline.so.6.
+  # Current nixpkgs ships only SONAME 7 (readline70) and SONAME 8
+  # (readline); there is no package providing SONAME 6, and unlike the
+  # OpenSSL 1.0.0 libraries it is not vendored alongside it either, so there
+  # is nothing to point autoPatchelf at. This module is not on the path
+  # exercised by `idrive --version` or by the non-interactive CLI in
+  # general, so the missing dependency is ignored rather than papered over
+  # with a mismatched SONAME that would not actually link.
+  autoPatchelfIgnoreMissingDeps = [ "libreadline.so.6" ];
 
   dontConfigure = true;
   dontBuild = true;
@@ -135,6 +175,11 @@ stdenv.mkDerivation (finalAttrs: {
     done
 
     runHook postInstall
+  '';
+
+  postInstall = ''
+    mkdir -p "$out/bin"
+    ln -s "$out/opt/IDriveForLinux/bin/idrive" "$out/bin/idrive"
   '';
 
   meta = {

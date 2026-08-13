@@ -52,6 +52,9 @@
           package-layout = pkgs.callPackage ./nix/tests/package-layout.nix {
             inherit idrive-client;
           };
+          package-runs = pkgs.callPackage ./nix/tests/package-runs.nix {
+            inherit idrive-client;
+          };
         });
     };
 }
