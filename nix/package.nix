@@ -10,6 +10,12 @@
 , zlib
 , bzip2
 , xz
+, makeWrapper
+, coreutils
+, bash
+, procps
+, util-linux
+, unixtools
 , version ? "3.14.0"
 }:
 
@@ -82,7 +88,7 @@ stdenv.mkDerivation (finalAttrs: {
   # layout and a populated PATH. Its payload is located the same way the
   # installer locates it, by the __idrive__ marker line, which is stable
   # across versions in a way a raw gzip-magic scan is not.
-  nativeBuildInputs = [ gnutar gzip gawk autoPatchelfHook ];
+  nativeBuildInputs = [ gnutar gzip gawk autoPatchelfHook makeWrapper ];
 
   # Confirmed in phase 0 from ldd against the extracted binaries, plus two
   # more found by autoPatchelfHook itself against vendored Python C
@@ -178,8 +184,55 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   postInstall = ''
+    root="$out/opt/IDriveForLinux"
+    vendorLib="$root/bin/Idrivelib/dependencies/python/lib"
+
+    # The update logic is compiled into the static bin/idrive binary and is
+    # reachable only through this flag. Assert the flag still exists in the
+    # binary, so an upstream rename fails the build rather than silently
+    # leaving the updater reachable.
+    if ! grep -qa -- '--check-update' "$root/bin/idrive"; then
+      echo "the --check-update flag was not found in bin/idrive" >&2
+      echo "upstream may have renamed it; re-run the phase 0 string analysis" >&2
+      exit 1
+    fi
+
     mkdir -p "$out/bin"
-    ln -s "$out/opt/IDriveForLinux/bin/idrive" "$out/bin/idrive"
+
+    # Argv-intercepting wrapper. The client's in-place updater rewrites its
+    # own install tree, which is read-only here, and migrates the user profile
+    # schema; a partially applied migration leaves a profile the client cannot
+    # parse. Refusing before the binary runs is what makes that state
+    # unreachable rather than merely unlikely.
+    cat > "$out/bin/idrive" <<EOF
+#!${bash}/bin/bash
+set -euo pipefail
+
+for arg in "\$@"; do
+  case "\$arg" in
+    --check-update|--handle-update|--launch-update)
+      echo "iDrive is managed by Nix; this build will not self-update." >&2
+      echo "Update the flake input and rebuild instead." >&2
+      exit 1
+      ;;
+  esac
+done
+
+export LD_LIBRARY_PATH="$vendorLib\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export PATH="${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
+export TERM="\''${TERM:-xterm}"
+
+exec "$root/bin/idrive" "\$@"
+EOF
+    chmod +x "$out/bin/idrive"
+
+    # idevsutil needs environment only, so makeWrapper is enough.
+    for prog in idevsutil idevsutil_dedup idevsutil_dedup_sync idevsutil_sync; do
+      [ -e "$root/idriveIt/$prog" ] || continue
+      makeWrapper "$root/idriveIt/$prog" "$out/bin/$prog" \
+        --prefix LD_LIBRARY_PATH : "$vendorLib" \
+        --set-default TERM xterm
+    done
   '';
 
   meta = {

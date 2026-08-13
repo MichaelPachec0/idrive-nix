@@ -55,6 +55,9 @@
           package-runs = pkgs.callPackage ./nix/tests/package-runs.nix {
             inherit idrive-client;
           };
+          package-no-selfupdate = pkgs.callPackage ./nix/tests/package-no-selfupdate.nix {
+            inherit idrive-client;
+          };
         });
     };
 }
