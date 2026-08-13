@@ -67,6 +67,9 @@
           package-cron-guard = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
             inherit idrive-client;
           };
+          package-cron-guard-bareword = pkgs.callPackage ./nix/tests/package-cron-guard-bareword.nix {
+            inherit idrive-client;
+          };
           prepare-script = pkgs.callPackage ./nix/tests/prepare-script.nix {
             inherit idrive-client;
           };
@@ -96,6 +99,9 @@
             idrive-client = self.packages.${system}.idrive-client_3_8_0;
           };
           package-cron-guard-380 = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
+            idrive-client = self.packages.${system}.idrive-client_3_8_0;
+          };
+          package-cron-guard-bareword-380 = pkgs.callPackage ./nix/tests/package-cron-guard-bareword.nix {
             idrive-client = self.packages.${system}.idrive-client_3_8_0;
           };
         });

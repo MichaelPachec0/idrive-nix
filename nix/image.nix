@@ -28,29 +28,27 @@ let
       "${prepare}/bin/idrive-prepare"
 
       # No command override (the container's real, intended use: run as the
-      # backup daemon) means run cron. Do that through the absolute symlink
-      # path, not a bare `idrive` resolved via PATH: bash sets a bare word's
-      # argv0 to the literal string "idrive", and the wrapper's own
-      # symlink-guard workaround (nix/wrappers.nix, exec -a "$0") falls back
-      # to "$PWD/idrive" for an argv0 with no slash in it, which does not
-      # exist as a file at all, let alone a symlink. The client's --cron
-      # entry point refuses to run unless $0 names a filesystem symlink, so
-      # a bare PATH lookup here would trip that guard, print "Launch the
-      # service using service manager.", and exit 0 immediately - a
-      # container that starts and dies instantly with no useful signal.
-      # ${idrive-client}/bin/idrive IS a symlink (see nix/wrappers.nix), so
-      # this satisfies the guard exactly like the NixOS module's own
-      # ExecStart.
-      #
-      # A command override (e.g. `idrive --version` for interactive
-      # diagnostics) does not go through --cron and so does not need the
-      # symlink guard; forward it via "$@" and let it resolve through PATH,
-      # which runtimeInputs above already provides.
+      # backup daemon) defaults to "idrive --cron"; an explicit override
+      # (e.g. `idrive --version` for interactive diagnostics, as podman
+      # passes it: CMD's own first token is already the program name, not
+      # just its arguments) is used as-is. Either way "idrive" resolves
+      # through PATH (runtimeInputs above), not a hardcoded absolute path:
+      # nix/wrappers.nix's argv0 resolution has a bare-word arm that runs
+      # `command -v` on a slash-less $0 and lands on
+      # ${idrive-client}/bin/idrive, which IS a symlink, satisfying the
+      # client's own `unless(-l $0)` guard on --cron. That fix lives once,
+      # in the wrapper, rather than duplicated as an absolute-path
+      # workaround at every call site that might invoke --cron (this
+      # entrypoint, the NixOS module's ExecStart, or an interactive shell) -
+      # see nix/tests/package-cron-guard-bareword.nix for the regression
+      # test. set -- (not a plain default in the exec line) is deliberate:
+      # "$@" must become exactly ("idrive" "--cron"), the same shape podman
+      # would hand us for an explicit override, not "idrive" plus a
+      # separately-quoted "--cron" tacked onto whatever "$@" already was.
       if [ "$#" -eq 0 ]; then
-        exec "${idrive-client}/bin/idrive" --cron
-      else
-        exec "$@"
+        set -- idrive --cron
       fi
+      exec "$@"
     '';
   };
 in

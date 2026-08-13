@@ -102,9 +102,26 @@ export TERM="\''${TERM:-xterm}"
 # argv0 was. Prepending \$PWD, not realpath/readlink, is deliberate: the
 # whole point is to preserve whatever \$0 actually is, symlink and all, not
 # collapse it to its target.
+#
+# A bare word (no slash at all, e.g. \$0 == "idrive" from a caller that
+# invoked us through PATH) is a fourth case, distinct from both the
+# absolute and the slash-containing-relative ones: prepending \$PWD to it
+# fabricates "\$PWD/idrive", a path that generally does not exist, is
+# never a symlink, and trips the client's own \`unless(-l \$0)\` guard on
+# --cron below regardless of how this wrapper itself was actually found.
+# Resolve it through PATH instead with \`command -v\`, the same mechanism
+# the shell itself just used to find this wrapper: for a package on PATH
+# that lookup returns <pkg>/bin/idrive, which IS a symlink (this file's
+# own public entry point), satisfying the guard exactly like the
+# absolute-path case. \`|| true\` plus the emptiness check keep this safe
+# under \`set -eu\` if PATH lookup finds nothing (falls back to the old,
+# possibly-guard-tripping \$PWD/\$0 behavior rather than aborting the
+# wrapper outright).
 case "\$0" in
-  /*) idriveArgv0="\$0" ;;
-  *) idriveArgv0="\$PWD/\$0" ;;
+  /*)   idriveArgv0="\$0" ;;
+  */*)  idriveArgv0="\$PWD/\$0" ;;
+  *)    idriveArgv0="\$(command -v "\$0" 2>/dev/null || true)"
+        [ -n "\$idriveArgv0" ] || idriveArgv0="\$PWD/\$0" ;;
 esac
 
 # exec -a propagates idriveArgv0 (this wrapper's own invocation path, made
