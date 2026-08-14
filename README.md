@@ -55,6 +55,19 @@ do anything. On a native install:
 sudo idrive --account-setting
 ```
 
+Run this as the user the service runs as, which is what plain `sudo` gives
+you while `services.idrive.user` keeps its default of `root`. If you have
+pointed that option at a different user, run setup as that user instead:
+
+```
+sudo -u alice idrive --account-setting
+```
+
+The client keys its profile by the invoking user (`user_profile/<user>` in
+the state directory), so a profile created by root is not a profile the
+daemon running as `alice` can use, and the two users writing into the same
+state directory will collide on ownership.
+
 Then, at the prompts:
 - `1) Login using IDrive credentials`
   - enter your IDrive username
@@ -178,6 +191,8 @@ before doing this:
 ```
 sudo idrive --account-setting
 ```
+
+(as the service user, per "First-run login" above)
 
 You will see a prompt similar to:
 
