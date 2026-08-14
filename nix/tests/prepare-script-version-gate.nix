@@ -1,10 +1,12 @@
 { runCommand, idrive-client, callPackage }:
 
 let
-  # Two idrive-client derivations that differ only in `version`. This is
-  # deliberately not a different `src`: what is under test is mkPrepare's
-  # comparison of the stamped version against `idrive-client.version`, not
-  # whether two different client releases produce different bytes. Using
+  # Two idrive-client derivations that differ only in `version`, which
+  # makes them differ in store path too, since the store path's name is
+  # built from pname and version. This is deliberately not a different
+  # `src`: what is under test is mkPrepare's staging gate - that it
+  # re-stages exactly when the package it stages from changes - not whether
+  # two different client releases produce different bytes. Using
   # overrideAttrs keeps the real package's pinned version (used everywhere
   # else in the flake) untouched; only these two local values are fake.
   mkFakeVersion = version: idrive-client.overrideAttrs (_: {
