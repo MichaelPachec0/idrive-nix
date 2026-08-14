@@ -14,6 +14,9 @@ let
   stateDir = "/opt/IDriveForLinux/idriveIt";
 
   startLib = callPackage ./start.nix { inherit idrive-client; };
+  prepare = startLib.mkPrepare {
+    inherit stateDir timeZone;
+  };
 
   # The same launcher the native systemd unit uses as its ExecStart: it
   # prepares the state directory (including the writable application
@@ -36,6 +39,15 @@ let
     runtimeInputs = [ idrive idrive-client ];
     text = ''
       set -euo pipefail
+
+      # Unconditional, before any dispatch below: the container's contract
+      # is that its volume is ready once the entrypoint has run, and that
+      # has to hold for command overrides that never reach the launcher
+      # (`podman run <image> idevsutil_dedup ...`, say) as much as for the
+      # default daemon. The launcher runs this same script again on the
+      # paths that do reach it; the second run is idempotent and, with the
+      # staging gate already satisfied, costs a handful of symlinks.
+      "${prepare}/bin/idrive-prepare"
 
       # No command override (the container's real, intended use: run as the
       # backup daemon) defaults to "idrive --cron"; an explicit override
