@@ -86,6 +86,10 @@
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
           };
+          permissions = pkgs.callPackage ./nix/tests/permissions.nix {
+            nixosModule = self.nixosModules.idrive;
+            inherit idrive-client;
+          };
           image = pkgs.callPackage ./nix/tests/image.nix {
             idrive-image = self.packages.${system}.idrive-image;
           };
