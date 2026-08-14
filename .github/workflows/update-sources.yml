@@ -1,0 +1,31 @@
+name: Update pinned iDrive version
+
+on:
+  schedule:
+    - cron: "12 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Refresh nix/sources.json
+        run: nix run .#update
+
+      - name: Open a pull request when the pin changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(nix): pin new iDrive client version"
+          title: "chore(nix): pin new iDrive client version"
+          body: |
+            Automated pin refresh from the upstream version manifest.
+            The client's own updater is disabled in this package, so the
+            pinned version is the only way the client changes.
+          branch: automation/pin-idrive
