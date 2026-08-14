@@ -62,17 +62,27 @@ in
       type = types.str;
       default = "root";
       description = ''
-        A backup agent can only read what its user can read. root is the
-        default for whole-system backups; a dedicated user is safer when the
-        backup set is narrow. This module does not create that user: set
-        users.users.<name> yourself before pointing this option at it.
+        Applies only to backend = "native". A backup agent can only read
+        what its user can read. root is the default for whole-system
+        backups; a dedicated user is safer when the backup set is narrow.
+        This module does not create that user: set users.users.<name>
+        yourself before pointing this option at it. Under backend =
+        "container" the client runs as whatever user is baked into the
+        image (root), not a host user this module could substitute in;
+        setting user away from its default there has no effect and fails
+        evaluation.
       '';
     };
 
     group = mkOption {
       type = types.str;
       default = "root";
-      description = "Group the service runs as.";
+      description = ''
+        Applies only to backend = "native": group the service runs as.
+        Under backend = "container" this has no effect, for the same
+        reason as user above, and fails evaluation if set away from its
+        default there.
+      '';
     };
 
     timeZone = mkOption {
@@ -142,9 +152,20 @@ in
           assertion = !(cfg.enable && cfg.backend == "container" && cfg.legacySourceLinks);
           message = ''
             services.idrive.legacySourceLinks has no effect under backend =
-            "container": /source/N there comes from container.imageFile's
-            volume mappings, not host symlinks. Unset legacySourceLinks, or
-            switch backend to "native".
+            "container": /source/N there comes from the container's own
+            volume mappings (built from backupPaths), not host symlinks.
+            Unset legacySourceLinks, or switch backend to "native".
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && (cfg.user != "root" || cfg.group != "root"));
+          message = ''
+            services.idrive.user/group have no effect under backend =
+            "container": the containerized client always runs as the
+            image's own user (root), fixed at image build time, not a host
+            user or group this module's systemd unit would otherwise run
+            as. Unset user/group (leave them at "root"), or switch backend
+            to "native".
           '';
         }
       ];
