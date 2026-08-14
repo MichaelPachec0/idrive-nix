@@ -77,12 +77,12 @@ in
         Applies only to backend = "native". A backup agent can only read
         what its user can read. root is the default for whole-system
         backups; a dedicated user is safer when the backup set is narrow.
-        This module does not create that user: set users.users.<name>
-        yourself before pointing this option at it. Under backend =
-        "container" the client runs as whatever user is baked into the
-        image (root), not a host user this module could substitute in;
-        setting user away from its default there has no effect and fails
-        evaluation.
+        When createUser is true (the default) and this is not "root", the
+        module creates that user itself; set createUser = false if you
+        manage the account yourself. Under backend = "container" the
+        client runs as whatever user is baked into the image (root), not a
+        host user this module could substitute in; setting user away from
+        its default there has no effect and fails evaluation.
       '';
     };
 
@@ -91,9 +91,88 @@ in
       default = "root";
       description = ''
         Applies only to backend = "native": group the service runs as.
-        Under backend = "container" this has no effect, for the same
-        reason as user above, and fails evaluation if set away from its
-        default there.
+        When createUser is true (the default) and this is not "root", the
+        module creates that group too. Under backend = "container" this
+        has no effect, for the same reason as user above, and fails
+        evaluation if set away from its default there.
+      '';
+    };
+
+    createUser = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Applies only to backend = "native". When true and user is not
+        "root", define users.users.<user> as a system user with group as
+        its primary group (and users.groups.<group> too, when that is also
+        not "root"). Set this to false if you manage that account yourself
+        (for example because it already exists for another reason), or if
+        user stays at its default of "root", for which this module never
+        defines users.users.root.
+      '';
+    };
+
+    supplementaryGroups = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "media" ];
+      description = ''
+        Applies only to backend = "native". Extra groups the service
+        belongs to, on top of group above. Use this when the data under
+        backupPaths is already readable by a group the service user can
+        join; it grants exactly that group's read access and nothing more.
+        For data that is not already group-readable, see readAllFiles
+        below.
+
+        These are applied twice, deliberately: to the unit as
+        SupplementaryGroups, which covers the daemon, and (when createUser
+        is true) to the account as extraGroups, which covers running the
+        client by hand for account setup. The unit property alone would
+        leave interactive setup without the access the daemon has, since
+        SupplementaryGroups never touches /etc/group. With createUser =
+        false, only the unit grant applies and the group membership of the
+        account is yours to manage.
+      '';
+    };
+
+    readAllFiles = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Applies only to backend = "native". When true, grants the service
+        the CAP_DAC_READ_SEARCH capability (via both AmbientCapabilities
+        and CapabilityBoundingSet), which lets it read every file and
+        search every directory on the system regardless of ownership or
+        mode, bypassing normal DAC read/search checks entirely. This is a
+        real privilege grant: with it, the service can read any file a
+        root process could read. It is narrower than running as root only
+        in that it grants no write, execute, or other capability, so a
+        compromised or malicious client still cannot modify, delete, or
+        execute anything outside what user/group/supplementaryGroups
+        already allow. It also does not guarantee access: mandatory access
+        control (SELinux, AppArmor) or a filesystem that denies the
+        capability outright can still block a read. Prefer
+        supplementaryGroups or a default ACL (see the README) when either
+        one covers the backup set; reach for this only when the set is
+        broad or unpredictable enough that neither is practical.
+      '';
+    };
+
+    umask = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "0077";
+      description = ''
+        Applies only to backend = "native". Sets the unit's UMask, which
+        governs the permission bits of files the client creates, most
+        notably restored files. Left null (the default) so this module
+        never changes existing restore behavior on its own; systemd's own
+        default of 0022 then applies, which means a file that was mode
+        0600 before backup can come back 0644 on restore, readable by
+        anyone who can read the restore location. See the README's
+        permission model section for why restoring the original mode and
+        ownership exactly is not something this option (or any
+        non-root-capable setup) can guarantee.
       '';
     };
 
@@ -180,6 +259,40 @@ in
             to "native".
           '';
         }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && cfg.supplementaryGroups != [ ]);
+          message = ''
+            services.idrive.supplementaryGroups has no effect under
+            backend = "container", for the same reason as user/group
+            above. Unset it, or switch backend to "native".
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && cfg.readAllFiles);
+          message = ''
+            services.idrive.readAllFiles has no effect under backend =
+            "container": the containerized client always runs as the
+            image's own root user, which already bypasses the checks this
+            option would grant a capability around. Unset it, or switch
+            backend to "native".
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && cfg.umask != null);
+          message = ''
+            services.idrive.umask has no effect under backend =
+            "container": this module does not set UMask on the
+            containerized unit. Unset it, or switch backend to "native".
+          '';
+        }
+      ];
+      warnings = lib.optionals (cfg.enable && cfg.backend == "native" && cfg.readAllFiles && cfg.user == "root") [
+        ''
+          services.idrive.readAllFiles is true but services.idrive.user is
+          "root": root already bypasses the DAC checks CAP_DAC_READ_SEARCH
+          would otherwise get around, so this option has no additional
+          effect. This is harmless, just redundant.
+        ''
       ];
     }
     (mkIf (cfg.enable && cfg.backend == "native") {
@@ -198,6 +311,31 @@ in
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
     ] ++ lib.optionals cfg.legacySourceLinks sourceLinks;
+
+    # Never touch users.users.root / users.groups.root: root always exists,
+    # and defining it here would fight whatever the rest of the system
+    # already says about it.
+    # supplementaryGroups is also given to the account itself, not only to
+    # the unit. SupplementaryGroups on the unit sets the daemon process's
+    # supplementary GIDs directly and never touches /etc/group, so it does
+    # nothing for the documented interactive path, which runs the launcher
+    # outside systemd (sudo -u <user> idrive --account-setting). Without
+    # this, setup and the daemon would see different files: setup could
+    # fail to read a backup path the daemon reads fine, which is a
+    # confusing thing to debug. Only possible when this module owns the
+    # account; with createUser = false the unit-level grant still applies
+    # to the daemon and the operator owns the group membership.
+    users.users = lib.mkIf (cfg.createUser && cfg.user != "root") {
+      ${cfg.user} = {
+        isSystemUser = true;
+        group = cfg.group;
+        extraGroups = cfg.supplementaryGroups;
+      };
+    };
+
+    users.groups = lib.mkIf (cfg.createUser && cfg.user != "root" && cfg.group != "root") {
+      ${cfg.group} = { };
+    };
 
     systemd.services.idrive = {
       description = "IDrive Linux backup client";
@@ -243,7 +381,38 @@ in
         ProtectHome = "read-only";
         PrivateTmp = true;
         ReadWritePaths = [ cfg.stateDir ];
+        # ReadOnlyPaths only marks these paths read-only inside the unit's
+        # mount namespace; it grants no DAC access by itself. What actually
+        # lets a non-root user read files under these paths is
+        # SupplementaryGroups, readAllFiles below, or host-managed ACLs -
+        # see the README's permission model section.
         ReadOnlyPaths = cfg.backupPaths;
+      }
+      // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
+        SupplementaryGroups = cfg.supplementaryGroups;
+      }
+      // lib.optionalAttrs cfg.readAllFiles {
+        # CAP_DAC_READ_SEARCH bypasses file read and directory search
+        # permission checks without granting any write capability - the
+        # narrowest capability that gets a non-root backup agent "read
+        # everything". Both AmbientCapabilities and CapabilityBoundingSet
+        # are needed: AmbientCapabilities is what actually carries the
+        # capability into the non-root process's effective set (a
+        # non-root process's ambient set is otherwise always empty), and
+        # CapabilityBoundingSet has to include it too, or the ambient grant
+        # is dropped, since a capability cannot be ambient unless it is
+        # also in the bounding set. This is compatible with
+        # NoNewPrivileges=true above: unlike file capabilities or setuid,
+        # ambient capabilities do not need privilege escalation at exec
+        # time to take effect, and nix/tests/permissions.nix exercises this
+        # combination directly rather than assuming it: it reads a 0600
+        # root-owned file as the service user, and asserts the same read
+        # fails without the capability.
+        AmbientCapabilities = [ "CAP_DAC_READ_SEARCH" ];
+        CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
+      }
+      // lib.optionalAttrs (cfg.umask != null) {
+        UMask = cfg.umask;
       }
       # StateDirectory is always relative to /var/lib, so it only applies
       # when stateDir keeps its default. A custom path is handled by the
