@@ -16,6 +16,7 @@
 , procps
 , util-linux
 , unixtools
+, runCommand
   # No hardcoded literal: update.sh only ever appends new keys to
   # sources.json, it never edits this file, so a literal default here would
   # keep building the old version forever after a pin bump merges. The
@@ -47,7 +48,7 @@
 
 let
   wrappers = import ./wrappers.nix {
-    inherit lib bash coreutils gnutar gzip procps util-linux unixtools;
+    inherit lib bash coreutils gnutar gzip procps util-linux unixtools runCommand;
   };
   sources = lib.importJSON ./sources.json;
   # Forced only when no installer was passed in, so a caller supplying its
