@@ -232,9 +232,13 @@ so this package does not claim `aarch64-linux`.
 
 ## aarch64 support is built but not hardware-verified
 
-This flake builds `idrive-client` (3.14.0) for `aarch64-linux`, and the
-flake's checks evaluate and build cleanly on that architecture. However, no
-aarch64 hardware or emulator was available during development to actually
+This flake builds `idrive-client` (3.14.0) for `aarch64-linux`, and CI
+builds the package and the OCI image on a native ARM runner on every push.
+The checks are a different matter: `nix flake check` only evaluates the
+checks for the system it runs on ("omitted these incompatible systems:
+aarch64-linux" on any other), and CI runs it on `x86_64-linux` only, so no
+check in this suite has ever run on ARM. Beyond that, no aarch64 hardware
+or emulator was available during development to actually
 run the client on that architecture. The client embeds a table of transfer
 binary ("evsbin") candidates for different targets; the ARM entry used here
 was selected from that table by matching the target triple, not confirmed
@@ -279,5 +283,6 @@ The flake's checks, including three NixOS VM tests, cover packaging,
 wrapping, the prepare script, the native service, the container backend,
 and the image build. They do not and cannot cover real backup or restore
 against iDrive's own servers, since that requires a live iDrive account and
-credentials that CI does not have. They also do not cover aarch64 on real
-hardware, per the note above.
+credentials that CI does not have. They also never run on aarch64 at all:
+CI builds the package and image on an ARM runner, but runs `nix flake
+check` only on `x86_64-linux`, per the note above.
