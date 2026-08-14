@@ -13,15 +13,30 @@ jobs:
     name: Update Description on DockerHub
     runs-on: ubuntu-latest
 
+    env:
+      # Both halves, and read the same way the publish workflow reads them:
+      # the namespace is a repository variable (not a secret, see the
+      # README), the token is a secret. Without this guard the job pushed
+      # this repository's README to a hardcoded third party's Docker Hub
+      # repository; with it, a fork that has not configured Docker Hub
+      # simply skips the job instead of failing or publishing somewhere it
+      # does not own. The secrets context is not available in `if:`, hence
+      # the job-level env indirection.
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' && vars.DOCKERHUB_USERNAME != '' }}
+
     # steps to perform in job
     steps:
       - name: Checkout code
+        if: env.HAS_DOCKERHUB == 'true'
         uses: actions/checkout@v6.0.2
 
       - name: Update dockerhub repo description
+        if: env.HAS_DOCKERHUB == 'true'
         uses: peter-evans/dockerhub-description@v5.0.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: snorre0815/idrive-docker
+          # The same repository the publish workflow pushes images to, so
+          # the description always describes the images beside it.
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/idrive-docker
           short-description: ${{ github.event.repository.description }}
