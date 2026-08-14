@@ -7,15 +7,29 @@ on:
       - "flake.nix"
       - "flake.lock"
       - "nix/**"
+      - ".github/workflows/build-and-publish.yml"
   workflow_dispatch:
 
 jobs:
   checks:
     name: nix flake check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # nix flake check builds three NixOS VM tests (nix/tests/native.nix,
+    # image.nix, container.nix). GitHub's standard hosted Linux runners do
+    # not officially support nested virtualization: /dev/kvm is undocumented
+    # and inconsistent there. The pinned nixpkgs' own qemu-common.nix passes
+    # "-machine accel=kvm:tcg" (virtualisation.qemu.forceAccel is not set by
+    # any test here), so QEMU itself falls back to slower, unaccelerated
+    # software emulation instead of hard-failing when /dev/kvm is missing or
+    # inaccessible. The realistic risk is a slow run eating the job's time
+    # budget, not a broken one, so this bounds that instead of relying on
+    # the 360-minute default.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: DeterminateSystems/nix-installer-action@v20
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
       - run: nix flake check -L
 
   build:
@@ -35,50 +49,82 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # DOCKERHUB_TOKEN is a repository secret and does not exist on a
+      # fork. The secrets context is not available in step-level `if:`
+      # conditions, so this job-level env entry is what lets the steps
+      # below gate on whether it is actually set, rather than guessing from
+      # fork status (a fork of this repository is still github.repository's
+      # own fork status "true" forever, and this repository is itself a
+      # permanent fork of snorre-k/idrive-docker, so a fork check here would
+      # disable every registry push unconditionally).
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      registries: ${{ steps.meta.outputs.registries }}
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: DeterminateSystems/nix-installer-action@v20
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
 
-      - name: Read pinned version
-        id: version
+      - name: Read pinned version and registry list
+        id: meta
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_USERNAME }}
         run: |
           version=$(nix eval --raw .#idrive-client.version)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+          # Computed once here and consumed by both this job's push step and
+          # the manifest job below (via job outputs), so the two never drift
+          # out of sync on which registries are in scope for this run.
+          # ghcr.io requires a lowercase path; GITHUB_REPOSITORY preserves
+          # the owner's actual case (MichaelPachec0/idrive-docker here), so
+          # this reproduces the old workflow's hardcoded-lowercase path with
+          # a shell lowercase expansion instead of assuming the case is
+          # already right.
+          registries="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ "$HAS_DOCKERHUB" = "true" ]; then
+            registries="$registries docker.io/$DOCKERHUB_NAMESPACE/idrive-docker"
+          fi
+          echo "registries=$registries" >> "$GITHUB_OUTPUT"
+
       - name: Build image
         run: nix build -L .#packages.${{ matrix.system }}.idrive-image
 
-      # The registry pushes below need real DOCKERHUB_* and GHCR credentials.
-      # A fork of this repository does not have those secrets, and a push
-      # event to a fork's own main branch (or a manual dispatch there) would
-      # otherwise hit these steps with blank credentials and fail with a
-      # confusing login error instead of a clear "not applicable" skip.
-      # github.event.repository.fork is true for any repository that GitHub
-      # itself considers a fork, so this check needs no hardcoded repo name
-      # and keeps working if this repository is renamed or re-forked again.
       - name: Log in to GHCR
-        if: github.ref == 'refs/heads/main' && github.event.repository.fork == false
+        # GITHUB_TOKEN always exists, including on forks, and authenticates
+        # against the fork's own ghcr.io namespace: no secret-presence
+        # guard needed here, only the branch check.
+        if: github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" \
+          echo "$GHCR_TOKEN" \
             | nix run nixpkgs#skopeo -- login ghcr.io \
-                -u "${{ github.actor }}" --password-stdin
+                -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Log in to Docker Hub
-        if: github.ref == 'refs/heads/main' && github.event.repository.fork == false
+        if: github.ref == 'refs/heads/main' && env.HAS_DOCKERHUB == 'true'
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+          echo "$DOCKERHUB_TOKEN" \
             | nix run nixpkgs#skopeo -- login docker.io \
-                -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+                -u "${{ vars.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Push per-arch tags
-        if: github.ref == 'refs/heads/main' && github.event.repository.fork == false
+        if: github.ref == 'refs/heads/main'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
           ARCH: ${{ matrix.arch }}
+          REGISTRIES: ${{ steps.meta.outputs.registries }}
         run: |
-          for repo in \
-            "ghcr.io/${{ github.repository }}" \
-            "docker.io/${{ secrets.DOCKERHUB_USERNAME }}/idrive-docker"; do
+          # REGISTRIES is the space-separated list built above; it already
+          # omits docker.io when Docker Hub credentials are unavailable, so
+          # this loop needs no further secret check. Deliberately unquoted:
+          # word-splitting over a controlled list with no spaces in any
+          # element.
+          for repo in $REGISTRIES; do
             nix run nixpkgs#skopeo -- copy \
               "docker-archive:./result" \
               "docker://$repo:$VERSION-$ARCH"
@@ -87,35 +133,37 @@ jobs:
   manifest:
     name: Merge multiarch manifest
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event.repository.fork == false
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      VERSION: ${{ needs.build.outputs.version }}
+      REGISTRIES: ${{ needs.build.outputs.registries }}
     steps:
-      - uses: actions/checkout@v6.0.2
-      - uses: DeterminateSystems/nix-installer-action@v20
-
-      - name: Read pinned version
-        id: version
+      # No checkout and no nix install here: version and the registry list
+      # both come from the build job's outputs above, so this job has
+      # nothing left to read from the repository or evaluate with nix.
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version=$(nix eval --raw .#idrive-client.version)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "$GHCR_TOKEN" | docker login ghcr.io \
+            -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Log in
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB == 'true'
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
-            -u "${{ github.actor }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io \
-            -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "$DOCKERHUB_TOKEN" | docker login docker.io \
+            -u "${{ vars.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Create and push manifests
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for repo in \
-            "ghcr.io/${{ github.repository }}" \
-            "docker.io/${{ secrets.DOCKERHUB_USERNAME }}/idrive-docker"; do
+          for repo in $REGISTRIES; do
             for tag in "$VERSION" latest; do
               docker manifest create "$repo:$tag" \
                 --amend "$repo:$VERSION-amd64" \

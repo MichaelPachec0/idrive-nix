@@ -16,7 +16,18 @@
 , procps
 , util-linux
 , unixtools
-, version ? "3.14.0"
+  # No hardcoded literal: update.sh only ever appends new keys to
+  # sources.json, it never edits this file, so a literal default here would
+  # keep building the old version forever after a pin bump merges. The
+  # highest key in sources.json is always the newest pin; compareVersions
+  # orders dotted-numeric versions like 3.14.0 above 3.8.0 correctly (plain
+  # string sort would not: "3.14.0" < "3.8.0" lexicographically).
+, version ?
+    (let
+      pinned = lib.importJSON ./sources.json;
+      versions = builtins.attrNames pinned;
+    in
+      lib.last (lib.sort (a: b: builtins.compareVersions a b < 0) versions))
 }:
 
 let
