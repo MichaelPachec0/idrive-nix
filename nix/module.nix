@@ -189,6 +189,29 @@ in
       description = "Paths made available to the client for backup.";
     };
 
+    writablePaths = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      example = [ "/home/alice/restored" ];
+      description = ''
+        Applies only to backend = "native". Paths the service may write to,
+        on top of stateDir, added to the unit's ReadWritePaths. Restore
+        targets go here.
+
+        Without this, restores fail before file permissions are even
+        consulted: the unit runs with ProtectSystem = "strict" and
+        ProtectHome = "read-only", so the whole filesystem including /home
+        is read-only inside its mount namespace. ReadWritePaths takes
+        priority over both, so listing a path here reopens exactly that
+        path for writing and nothing else. Restoring into a user's own home
+        needs the home directory, or a subdirectory of it, listed here.
+
+        This governs only whether the write is permitted by the sandbox.
+        What the restored files end up owned by, and with which mode, is a
+        separate question; see the README's permission model section.
+      '';
+    };
+
     legacySourceLinks = mkOption {
       type = types.bool;
       default = false;
@@ -283,6 +306,44 @@ in
             services.idrive.umask has no effect under backend =
             "container": this module does not set UMask on the
             containerized unit. Unset it, or switch backend to "native".
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && cfg.writablePaths != [ ]);
+          message = ''
+            services.idrive.writablePaths has no effect under backend =
+            "container": it adds to the native unit's ReadWritePaths, and
+            the containerized client's write access is decided by its
+            volume mappings instead. Unset it, or switch backend to
+            "native".
+          '';
+        }
+        {
+          # Pointing user at an account that already exists as a normal
+          # login user, with createUser left at its default of true, makes
+          # this module declare that account a *system* user too, and
+          # NixOS rejects the combination with "Exactly one of
+          # isNormalUser and isSystemUser must be set" - an error that says
+          # nothing about which option caused it or how to fix it. Catch it
+          # here instead, where the fix can be named.
+          #
+          # createUser cannot simply default to "false when the account
+          # already exists": that default would read config.users.users,
+          # which this module also defines under a condition derived from
+          # createUser, and the evaluation would cycle.
+          assertion = !(cfg.enable && cfg.backend == "native" && cfg.createUser
+            && cfg.user != "root"
+            && (config.users.users ? ${cfg.user})
+            && config.users.users.${cfg.user}.isNormalUser);
+          message = ''
+            services.idrive.user is "${cfg.user}", which is already defined
+            as a normal login user, but services.idrive.createUser is still
+            true, so this module would additionally declare it a system
+            user and evaluation would fail.
+
+            Set services.idrive.createUser = false to run the service as
+            that existing account. createUser is only for accounts this
+            module should bring into existence itself.
           '';
         }
       ];
@@ -380,7 +441,10 @@ in
         ProtectSystem = "strict";
         ProtectHome = "read-only";
         PrivateTmp = true;
-        ReadWritePaths = [ cfg.stateDir ];
+        # ReadWritePaths takes priority over ProtectSystem and ProtectHome
+        # above, so this is what reopens a restore target for writing
+        # without relaxing either of them globally.
+        ReadWritePaths = [ cfg.stateDir ] ++ cfg.writablePaths;
         # ReadOnlyPaths only marks these paths read-only inside the unit's
         # mount namespace; it grants no DAC access by itself. What actually
         # lets a non-root user read files under these paths is
