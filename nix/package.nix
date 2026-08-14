@@ -28,6 +28,21 @@
       versions = builtins.attrNames pinned;
     in
       lib.last (lib.sort (a: b: builtins.compareVersions a b < 0) versions))
+  # The vendor installer to build from. Defaults to the download pinned in
+  # sources.json for `version`; nix/package-from-image.nix passes the 3.8.0
+  # installer it recovers from a published image layer instead, because
+  # that release is no longer downloadable from the vendor. Everything
+  # after this point - the marker scan, the nested-archive extraction, the
+  # evsbin pruning, the wrappers - is identical either way, which is the
+  # point of taking the installer as a parameter rather than maintaining a
+  # second derivation for the rollback build.
+  #
+  # Deliberately not named `src`: nixpkgs has a top-level `src` attribute
+  # (a throwing alias for simple-revision-control), and callPackage fills
+  # every parameter whose name exists in the package set, default or not,
+  # so a parameter called `src` would be handed that throw on every
+  # ordinary call and never see this default.
+, installer ? null
 }:
 
 let
@@ -35,8 +50,14 @@ let
     inherit lib bash coreutils gnutar gzip procps util-linux unixtools;
   };
   sources = lib.importJSON ./sources.json;
+  # Forced only when no installer was passed in, so a caller supplying its
+  # own (the 3.8.0 rollback build) does not need a sources.json pin for a
+  # release that cannot be downloaded any more.
   source = sources.${version} or (throw
     "idrive-client: version ${version} is not pinned in nix/sources.json");
+  installerSrc =
+    if installer != null then installer
+    else fetchurl { url = source.url; inherit (source) hash; };
 
   # Mirrors the arch selection in the installer's own shell header. The
   # aarch64 evsbin variant is not chosen by the shell header at all (it only
@@ -93,10 +114,7 @@ stdenv.mkDerivation (finalAttrs: {
   pname = "idrive-client";
   inherit version;
 
-  src = fetchurl {
-    url = source.url;
-    inherit (source) hash;
-  };
+  src = installerSrc;
 
   # The vendor installer is deliberately never executed: it assumes an FHS
   # layout and a populated PATH. Its payload is located the same way the

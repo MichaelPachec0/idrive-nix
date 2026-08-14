@@ -221,10 +221,14 @@ version 3.14.0.
 
 Version 3.8.0 is also available as `idrive.packages.<system>.idrive-client_3_8_0`,
 but only for `x86_64-linux`. The vendor no longer distributes a 3.8.0
-installer at any URL, so this build is instead extracted from the published
-`ghcr.io/snorre-k/idrive-docker:3.8.0` image layer, which only exists for
-that one architecture. There is no `aarch64-linux` build of 3.8.0, and none
-is planned unless the vendor makes an ARM-capable source available again.
+installer at any URL. It does still exist, though, bundled inside the
+published `ghcr.io/snorre-k/idrive-docker:3.8.0` image: that image carries
+the vendor's own installer alongside the installed tree. This build
+recovers that installer and feeds it through exactly the same derivation
+the current version uses, so the two packages differ only in which
+installer they were built from. The image it comes from was published for
+`x86_64-linux` only and no ARM result has ever been built or run from it,
+so this package does not claim `aarch64-linux`.
 
 ## aarch64 support is built but not hardware-verified
 

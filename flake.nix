@@ -27,10 +27,10 @@
           idrive-image = pkgs.callPackage ./nix/image.nix { inherit idrive-client; };
           default = idrive-client;
         } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # 3.8.0 is amd64-only: it is extracted from a published image layer
-          # that only exists for that architecture, see
-          # nix/package-from-image.nix for why there is no vendor .bin to
-          # build it from instead.
+          # 3.8.0 is exposed on amd64 only: its installer is recovered from
+          # a published image that exists for that architecture alone, see
+          # nix/package-from-image.nix for why that image is the only place
+          # a 3.8.0 installer still exists.
           idrive-client_3_8_0 = pkgs.callPackage ./nix/package-from-image.nix { };
         });
 
