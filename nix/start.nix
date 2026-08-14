@@ -9,14 +9,21 @@ in
 rec {
   inherit appSubdir;
 
-  mkPrepare = { stateDir, timeZone }:
+  # stateExpr is a shell expression, already quoted, that evaluates to the
+  # state directory. A system service knows that path at build time and
+  # passes a literal; a per-user service does not, because it depends on
+  # $HOME of whichever user the unit runs for, so it passes an expression
+  # resolved when the unit runs. Everything below is identical either way,
+  # which is the point: one implementation, two ways of naming the
+  # directory.
+  mkPrepareWith = { stateExpr, timeZone }:
     writeShellApplication {
       name = "idrive-prepare";
       runtimeInputs = [ coreutils ];
       text = ''
         set -euo pipefail
 
-        state="${stateDir}"
+        state=${stateExpr}
         appsrc="${idrive-client}/opt/IDriveForLinux/bin"
         shipped="${idrive-client}/opt/IDriveForLinux/idriveIt"
         app="$state/${appSubdir}"
@@ -156,22 +163,50 @@ rec {
   # idrivecron symlink because the client refuses that mode unless $0 is a
   # symlink; everything else runs through the regular-file copy, whose
   # abs_path is the same directory either way.
-  mkLauncher = { stateDir, timeZone }:
+  mkLauncherWith = { name, stateExpr, timeZone }:
     let
-      prepare = mkPrepare { inherit stateDir timeZone; };
+      prepare = mkPrepareWith { inherit stateExpr timeZone; };
     in
     writeShellApplication {
-      name = "idrive";
+      inherit name;
       text = ''
         set -euo pipefail
 
         "${prepare}/bin/idrive-prepare"
 
-        app="${stateDir}/${appSubdir}"
+        app=${stateExpr}/${appSubdir}
         if [ "''${1:-}" = "--cron" ]; then
           exec "$app/idrivecron" "$@"
         fi
         exec "$app/idrive" "$@"
       '';
     };
+
+  # System-wide use: the state directory is a fixed path chosen by the
+  # module, known when the package is built.
+  mkPrepare = { stateDir, timeZone }:
+    mkPrepareWith { stateExpr = ''"${stateDir}"''; inherit timeZone; };
+
+  mkLauncher = { stateDir, timeZone }:
+    mkLauncherWith { name = "idrive"; stateExpr = ''"${stateDir}"''; inherit timeZone; };
+
+  # Per-user use: the state directory follows the XDG base directory
+  # specification under the invoking user's own home, so each user gets a
+  # separate iDrive account, profile and schedule with no privilege
+  # involved: their own uid already owns everything they back up.
+  #
+  # The default has to be spelled out rather than relying on the unit's
+  # StateDirectory=, because the launcher also runs outside systemd for
+  # interactive account setup, where no unit environment exists.
+  userStateExpr = ''"''${XDG_STATE_HOME:-$HOME/.local/state}/idrive"'';
+
+  mkUserPrepare = { timeZone }:
+    mkPrepareWith { stateExpr = userStateExpr; inherit timeZone; };
+
+  # Named idrive-user, not idrive, on purpose. A machine can run both a
+  # system-wide backup account and per-user accounts, and two different
+  # commands cannot share one name on PATH. A command whose meaning depends
+  # on who typed it would be worse than a longer name.
+  mkUserLauncher = { timeZone }:
+    mkLauncherWith { name = "idrive-user"; stateExpr = userStateExpr; inherit timeZone; };
 }
