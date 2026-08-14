@@ -58,7 +58,13 @@ jobs:
       # own fork status "true" forever, and this repository is itself a
       # permanent fork of snorre-k/idrive-docker, so a fork check here would
       # disable every registry push unconditionally).
-      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      #
+      # Both halves are required, not just the token: the namespace comes
+      # from a repository variable, and with the token set but the variable
+      # empty the push target would be "docker.io//idrive-docker". That
+      # fails, and since the manifest job needs this one, it would take the
+      # fork's GHCR manifests down with it.
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' && vars.DOCKERHUB_USERNAME != '' }}
     outputs:
       version: ${{ steps.meta.outputs.version }}
       registries: ${{ steps.meta.outputs.registries }}
@@ -139,7 +145,10 @@ jobs:
       contents: read
       packages: write
     env:
-      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      # Same both-halves condition as the build job above; see the comment
+      # there. It has to match, or this job would try to log in to and push
+      # manifests for a registry the build job never pushed images to.
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_TOKEN != '' && vars.DOCKERHUB_USERNAME != '' }}
       VERSION: ${{ needs.build.outputs.version }}
       REGISTRIES: ${{ needs.build.outputs.registries }}
     steps:
