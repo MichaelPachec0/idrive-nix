@@ -11,9 +11,53 @@
 # already set earlier in the same build script (both existing callers set
 # root="$out/opt/IDriveForLinux" in their installPhase, and stdenv runs every
 # phase in one shell, so the variable is still in scope in postInstall).
-{ lib, bash, coreutils, gnutar, gzip, procps, util-linux, unixtools }:
+{ lib, bash, coreutils, gnutar, gzip, procps, util-linux, unixtools, runCommand }:
 
+let
+  # The name iDrive shows for this machine is the "backup location"
+  # nickname, and the client derives its default from the system hostname:
+  #
+  #   our $hostname = `uname -n`;
+  #   unless ($hostname) { $hostname = `hostname`; }
+  #
+  # Both are external commands, so the name is settable by controlling what
+  # those two report, which is the only lever there is: no CLI flag sets the
+  # nickname non-interactively (all ~120 were checked).
+  #
+  # These shims answer with IDRIVE_DEVICE_NAME when it is set, and delegate
+  # to the real tools otherwise, so behavior is unchanged unless a caller
+  # opts in. uname delegates every argument other than a bare -n/--nodename,
+  # because the client also runs `uname -m` to pick its transfer binaries and
+  # `uname -r` to check the kernel: answering those with a device name would
+  # break architecture detection.
+  deviceNameShims = runCommand "idrive-device-name-shims" { } ''
+    mkdir -p "$out/libexec/idrive-shims"
+
+    cat > "$out/libexec/idrive-shims/uname" <<EOF
+    #!${bash}/bin/bash
+    if [ -n "\''${IDRIVE_DEVICE_NAME:-}" ] && [ "\$#" -eq 1 ]; then
+      case "\$1" in
+        -n|--nodename) printf '%s\n' "\$IDRIVE_DEVICE_NAME"; exit 0 ;;
+      esac
+    fi
+    exec ${coreutils}/bin/uname "\$@"
+    EOF
+
+    cat > "$out/libexec/idrive-shims/hostname" <<EOF
+    #!${bash}/bin/bash
+    if [ -n "\''${IDRIVE_DEVICE_NAME:-}" ] && [ "\$#" -eq 0 ]; then
+      printf '%s\n' "\$IDRIVE_DEVICE_NAME"
+      exit 0
+    fi
+    exec ${unixtools.hostname}/bin/hostname "\$@"
+    EOF
+
+    chmod +x "$out/libexec/idrive-shims/uname" "$out/libexec/idrive-shims/hostname"
+  '';
+in
 {
+  inherit deviceNameShims;
+
   mkWrappers = { root, vendorLib }: ''
     # The update logic is compiled into the static bin/idrive binary and is
     # reachable only through these ARGV[0] tokens (checked below against the
@@ -92,7 +136,7 @@ if [ "\$first" = "--utilities" ]; then
 fi
 
 export LD_LIBRARY_PATH="${vendorLib}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-export PATH="${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
+export PATH="${deviceNameShims}/libexec/idrive-shims:${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
 # Make \$0 absolute without resolving through any symlink: loadAppPath runs
