@@ -161,6 +161,51 @@ sudo systemctl restart podman-idrive.service
 
 (or `docker-idrive.service` under the docker runtime.)
 
+## Two shapes: one machine account, or one account per user
+
+Decide which of these you want before configuring anything, because they
+have different privilege requirements and different failure modes.
+
+**One backup account for the whole machine.** `services.idrive.enable =
+true`, a system service. It backs up whatever paths you list regardless of
+who owns them, which is what you want for a server or a machine backed up
+as a unit. Reading other users' files is the hard part; see the permission
+model section below.
+
+**One account per user.** `services.idrive.userServices = [ "alice" ]`, a
+systemd user service per listed user. Each gets their own iDrive account,
+profile, schedule and state directory under `~/.local/state/idrive`.
+
+```nix
+services.idrive = {
+  package = pkgs.idrive-client;
+  userServices = [ "alice" "bob" ];
+};
+```
+
+The per-user shape needs no privilege at all: each user's own uid already
+owns everything they back up, so none of `readAllFiles`,
+`supplementaryGroups`, or ACLs applies, and restoring into their own home
+needs no `writablePaths` entry. If your situation is "a few people, each
+backing up their own files", this is the simpler and safer shape.
+
+Both can run on the same machine. Two things differ:
+
+- **The interactive command.** `idrive` for the system service,
+  `idrive-user` for a per-user one. Two different commands cannot share one
+  name on `PATH`, and a command that means different things depending on
+  who typed it would be worse than a longer name.
+- **Lingering.** The module enables it for every user in `userServices`.
+  Without it a user's systemd manager exits at logout and takes the backup
+  service with it, which is not something you want to learn during a
+  restore.
+
+Per-user first-run setup is the ordinary one, run as yourself:
+
+```
+idrive-user --account-setting
+```
+
 ## Permission model: which files the service can actually read
 
 By default `services.idrive.user` is `root`, and root reads everything. If
