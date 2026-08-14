@@ -16,6 +16,7 @@ pkgs.testers.runNixOSTest {
     services.idrive = {
       package = idrive-client;
       userServices = [ "alice" ];
+      userDeviceNames.alice = "laptop-alice";
       timeZone = "Etc/UTC";
     };
   };
@@ -99,5 +100,48 @@ pkgs.testers.runNixOSTest {
 
     # The self-update block still holds through the per-user entry point.
     machine.fail("runuser -u alice -- idrive-user --check-update")
+
+    # userDeviceNames decides what iDrive shows this machine as. The client
+    # has no CLI flag for it and derives the default from `uname -n` (with
+    # `hostname` as its fallback), so the module answers those two commands
+    # inside the client's own environment.
+    #
+    # The shims sit on the PATH the update-blocking wrapper exports, which is
+    # what the client runs under; they are deliberately not on a login
+    # shell's PATH. Assert the wiring where it actually lives, then the
+    # behavior by running the shims directly. Asserting a real registration
+    # end to end would need an iDrive account, which CI does not have.
+    wrapper = "/home/alice/.local/state/idrive/.app/idrive"
+    shim_dir = machine.succeed(
+        f"grep -o '/nix/store/[a-z0-9]*-idrive-device-name-shims/libexec/idrive-shims'"
+        f" {wrapper} | head -1"
+    ).strip()
+    assert shim_dir, "the wrapper does not put the device-name shims on PATH"
+
+    # First on PATH, or the real uname would win and the name would never
+    # take effect.
+    machine.succeed(
+        f"grep -q 'export PATH=\"{shim_dir}:' {wrapper}"
+    )
+
+    named = machine.succeed(
+        f"IDRIVE_DEVICE_NAME=laptop-alice {shim_dir}/uname -n;"
+        f" IDRIVE_DEVICE_NAME=laptop-alice {shim_dir}/hostname"
+    )
+    assert named.split() == ["laptop-alice", "laptop-alice"], (
+        f"device-name shims did not answer: {named!r}"
+    )
+
+    # The shims must answer nothing else. uname -m picks which transfer
+    # binaries the client stages, so a shim swallowing it would break
+    # architecture detection rather than just naming.
+    arch = machine.succeed(
+        f"IDRIVE_DEVICE_NAME=laptop-alice {shim_dir}/uname -m"
+    ).strip()
+    assert arch == "x86_64", f"uname -m was not passed through: {arch!r}"
+
+    # With no name set, the shims are transparent.
+    plain = machine.succeed(f"{shim_dir}/uname -n").strip()
+    assert plain == "machine", f"unset IDRIVE_DEVICE_NAME changed uname -n: {plain!r}"
   '';
 }

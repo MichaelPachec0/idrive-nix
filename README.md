@@ -206,6 +206,52 @@ Per-user first-run setup is the ordinary one, run as yourself:
 idrive-user --account-setting
 ```
 
+## Naming the device in the iDrive web interface
+
+What iDrive shows as the device name is what it calls the backup location,
+and the client derives its default from the machine's hostname. There is no
+command-line flag that sets it, so this module sets it by answering the two
+commands the client uses to ask (`uname -n`, and `hostname` as its
+fallback):
+
+```nix
+services.idrive = {
+  enable = true;
+  deviceName = "nas-backup";
+};
+```
+
+For per-user services, name each one separately. Without this every user's
+client registers under the same hostname and the web interface shows
+several devices with one name:
+
+```nix
+services.idrive = {
+  userServices = [ "alice" "bob" ];
+  userDeviceNames = {
+    alice = "laptop-alice";
+    bob = "laptop-bob";
+  };
+};
+```
+
+Three things to know before setting these:
+
+- **Letters, digits, underscore and hyphen only, 4 to 64 characters.** The
+  client rejects anything else at setup time, so spaces and dots do not
+  work.
+- **Set it before first account setup.** iDrive fixes the name when the
+  client first registers the machine, so this option decides the name of a
+  device that does not exist yet. It does not rename one that already does.
+- **Renaming an existing device is a web interface operation.** Changing
+  this option afterwards will not move a device that is already registered,
+  because by then the name is server-side state.
+
+Nothing else on the system is affected. The shims answer only for the
+device name and only when one is configured; every other query, including
+the architecture check that decides which transfer binaries get staged,
+passes straight through to the real tools.
+
 ## Permission model: which files the service can actually read
 
 By default `services.idrive.user` is `root`, and root reads everything. If

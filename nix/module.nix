@@ -27,6 +27,38 @@ let
     inherit (cfg) timeZone;
   };
 
+  # deviceName has to reach the interactive command as well as the unit, not
+  # just the unit: the name is fixed when the client first registers the
+  # machine, and that registration happens during interactive account setup.
+  # A unit-only setting would leave setup registering the hostname and the
+  # daemon later claiming a different name.
+  namedLauncher =
+    if cfg.deviceName == null then launcher
+    else
+      pkgs.runCommand "idrive-named" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+        mkdir -p "$out/bin"
+        makeWrapper ${launcher}/bin/idrive "$out/bin/idrive" \
+          --set IDRIVE_DEVICE_NAME ${lib.escapeShellArg cfg.deviceName}
+      '';
+
+  # The per-user case cannot bake a single name, because one launcher serves
+  # every user in userServices. It looks the caller up instead, so the unit
+  # and an interactive run resolve identically.
+  namedUserLauncher =
+    if cfg.userDeviceNames == { } then userLauncher
+    else
+      pkgs.writeShellApplication {
+        name = "idrive-user";
+        text = ''
+          case "$(id -un)" in
+          ${lib.concatStringsSep "\n" (lib.mapAttrsToList
+            (user: name: ''  ${lib.escapeShellArg user}) export IDRIVE_DEVICE_NAME=${lib.escapeShellArg name} ;;'')
+            cfg.userDeviceNames)}
+          esac
+          exec ${userLauncher}/bin/idrive-user "$@"
+        '';
+      };
+
   # Existing profiles address backup sets as /source/1, /source/2, and so on,
   # because that is how the container maps them. Recreating those names on the
   # host lets a migrated profile keep working untouched.
@@ -193,6 +225,53 @@ in
       default = [ ];
       example = [ "/srv/data" "/home/alice/documents" ];
       description = "Paths made available to the client for backup.";
+    };
+
+    deviceName = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "nas-backup";
+      description = ''
+        Name this machine shows under in the iDrive web interface, for the
+        system service. Null (the default) leaves the client's own
+        behavior alone, which is to use the machine's hostname.
+
+        iDrive calls this the backup location, and it is fixed when the
+        client first registers the machine: renaming afterwards is done
+        through the web interface, not by changing this option, because
+        the name is server-side state by then. Set it before running
+        account setup for the first time.
+
+        The client accepts letters, digits, underscore and hyphen only,
+        four to sixty-four characters. Anything else is rejected at setup
+        time, so spaces and dots do not work here.
+
+        There is no CLI flag that sets the nickname, so this works by
+        answering the two commands the client asks for the hostname
+        (uname -n, and hostname as its fallback). Nothing else about the
+        system is affected, and other uname queries, including the
+        architecture check that picks the transfer binaries, are passed
+        through untouched.
+      '';
+    };
+
+    userDeviceNames = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      example = { alice = "laptop-alice"; };
+      description = ''
+        Per-user equivalent of deviceName, keyed by user name, for users
+        listed in userServices.
+
+        Worth setting when more than one user backs up from one machine:
+        without it every per-user service registers under the same
+        hostname, and the iDrive web interface shows several devices with
+        one name and no way to tell them apart. Users not listed here keep
+        the client's default.
+
+        Same character rules as deviceName, and the same timing: the name
+        is fixed when that user's client first registers.
+      '';
     };
 
     userServices = mkOption {
@@ -404,7 +483,7 @@ in
     # Run interactive setup as the service user (root by default), the same
     # user the unit runs as: whoever runs the launcher first owns the files
     # it creates under stateDir.
-    environment.systemPackages = [ (lib.hiPrio launcher) cfg.package ];
+    environment.systemPackages = [ (lib.hiPrio namedLauncher) cfg.package ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
@@ -444,6 +523,11 @@ in
       environment = {
         TZ = cfg.timeZone;
         LC_ALL = "en_US.UTF-8";
+      } // lib.optionalAttrs (cfg.deviceName != null) {
+        # ExecStart runs the prepared application copy directly rather than
+        # going through the launcher, so the launcher's own wrapper does not
+        # cover the daemon. The wrapper's shims read this at runtime.
+        IDRIVE_DEVICE_NAME = cfg.deviceName;
       };
 
       serviceConfig = {
@@ -561,7 +645,7 @@ in
     # person) rather than a variant of the system-wide one, and a machine
     # can legitimately run both.
     (mkIf (cfg.userServices != [ ]) {
-      environment.systemPackages = [ userLauncher ];
+      environment.systemPackages = [ namedUserLauncher ];
 
       # Without lingering, a user's systemd manager exits when their last
       # session ends, taking the backup service with it. A backup that only
@@ -590,7 +674,7 @@ in
           Type = "simple";
           Restart = "on-failure";
           RestartSec = 10;
-          ExecStart = "${userLauncher}/bin/idrive-user --cron";
+          ExecStart = "${namedUserLauncher}/bin/idrive-user --cron";
         };
 
         environment = {
