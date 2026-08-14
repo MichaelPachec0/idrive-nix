@@ -63,5 +63,44 @@ pkgs.testers.runNixOSTest {
     machine.succeed(
         "test -f /var/lib/idrive-volume/user_profile/root/.trace/traceLog.txt"
     )
+
+    # The other way into a running container, and the one README documents
+    # for re-running setup on one that is already up: `podman exec`. It
+    # never runs the entrypoint, so nothing about the entrypoint's own PATH
+    # applies - what resolves "idrive" here is the image config's PATH (and
+    # /bin/idrive for anyone naming it by path). Both have to reach the
+    # launcher; when they did not, this exact command died with "Cannot
+    # open directory /nix/store/...-idrive-client/opt/IDriveForLinux
+    # Permission denied". Bypassing the entrypoint with `--entrypoint
+    # sleep` is deliberate on top of that: it leaves the volume completely
+    # unprepared, so the launcher's own prepare step is the only thing that
+    # can make this work.
+    machine.succeed("mkdir -p /var/lib/idrive-exec")
+    machine.succeed(
+        "podman run -d --name idrive-exec"
+        " -v /var/lib/idrive-exec:/opt/IDriveForLinux/idriveIt"
+        " --entrypoint sleep ${image} 600"
+    )
+    exec_setup = machine.succeed(
+        "timeout 300 podman exec idrive-exec idrive --account-setting 2>&1; true"
+    )
+    assert "Login using IDrive credentials" in exec_setup, (
+        f"podman exec idrive --account-setting never reached its login "
+        f"prompt: {exec_setup}"
+    )
+    machine.succeed(
+        "test -f /var/lib/idrive-exec/user_profile/root/.trace/traceLog.txt"
+    )
+
+    # /bin/idrive is the other name for the same thing, for anyone who
+    # reaches for an absolute path instead of PATH resolution.
+    binpath = machine.succeed(
+        "timeout 300 podman exec idrive-exec /bin/idrive --version 2>&1; true"
+    )
+    assert "${idrive-image.imageTag}" in binpath, (
+        f"/bin/idrive is not the client (expected version "
+        f"${idrive-image.imageTag}): {binpath}"
+    )
+    machine.succeed("podman rm -f idrive-exec")
   '';
 }

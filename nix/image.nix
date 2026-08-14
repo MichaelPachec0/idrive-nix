@@ -19,9 +19,14 @@ let
   # prepares the state directory (including the writable application
   # directory the client resolves its own appPath to) and execs the client
   # through it. Sharing it is what stops the two backends from drifting.
-  # It is listed ahead of idrive-client in runtimeInputs below so a bare
-  # "idrive" resolves to it and not to the package's own bin/idrive, whose
-  # appPath would be the read-only store.
+  #
+  # Every way of naming "idrive" inside this image has to reach it, not the
+  # package's own bin/idrive, whose appPath would be the read-only store.
+  # There are three, and each is handled below: the entrypoint's own PATH
+  # (runtimeInputs), the image config's PATH (which is what `podman exec`
+  # and any other process that never runs the entrypoint resolves through),
+  # and /bin/idrive (this launcher is first in `contents`, and symlinkJoin
+  # gives the first path in the list the name).
   idrive = startLib.mkLauncher {
     inherit stateDir timeZone;
   };
@@ -63,6 +68,13 @@ dockerTools.buildLayeredImage {
   # The client runs its own scheduler, and a backup agent has no business
   # shipping an editor.
   contents = [
+    # First, deliberately: symlinkJoin populates the image root by lndir'ing
+    # each path in turn and the first one to claim a name keeps it, so this
+    # is what makes /bin/idrive the launcher rather than the package's own
+    # store wrapper. `podman exec` does not run the entrypoint, and
+    # README's documented "re-run setup on a running container" is exactly
+    # that, so the entrypoint's PATH alone is not enough.
+    idrive
     idrive-client
     bashInteractive
     coreutils
@@ -87,6 +99,14 @@ dockerTools.buildLayeredImage {
   config = {
     Entrypoint = [ "${entrypoint}/bin/idrive-entrypoint" ];
     Env = [
+      # The launcher first. This is the PATH `podman exec` gives a process
+      # that never ran the entrypoint, so without it "idrive" there
+      # resolves to the package's own bin/idrive, whose appPath is the
+      # read-only store: "Cannot open directory /nix/store/... Permission
+      # denied". The rest of the list is the default a container runtime
+      # would have supplied on its own, kept so setting this does not
+      # quietly narrow anything.
+      "PATH=${idrive}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       # Not en_US.UTF-8: this image ships no locale data (the old Ubuntu
       # image installed locales-all; pulling in glibcLocales here just to
       # get one locale would bloat this image for a backup agent that does
