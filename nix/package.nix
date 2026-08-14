@@ -193,6 +193,17 @@ stdenv.mkDerivation (finalAttrs: {
     tar -xzf "$dep/linuxbin/k3/${variant.arch}/idrive.tar.gz" -C "$root/bin"
     tar -xzf "$dep/pythonbin/k3/${variant.arch}/python.tar.gz" -C "$dep"
 
+    # The vendored dashboard executable ("pythonBinaryName" to the client,
+    # which builds its path as <appPath>/Idrivelib/dependencies/python/
+    # dashboard). Whether it carries an execute bit inside python.tar.gz
+    # varies by release - 3.14.0's does, 3.8.0's does not - because the
+    # vendor's own flow chmods it after extraction: saveDependentBinaries
+    # runs "chmod $userExecPermStr $pyBinFile" on exactly this path. That
+    # cannot happen here, since the tree is read-only from the moment it
+    # lands in the store, so do it now for every release rather than
+    # depending on which archive happened to ship it set.
+    chmod +x "$dep/python/dashboard"
+
     mkdir -p "$root/idriveIt"
     tar -xzf "$dep/evsbin/${variant.evs}.tar.gz" -C "$root/idriveIt" \
       --strip-components=1
