@@ -161,6 +161,104 @@ sudo systemctl restart podman-idrive.service
 
 (or `docker-idrive.service` under the docker runtime.)
 
+## Permission model: which files the service can actually read
+
+By default `services.idrive.user` is `root`, and root reads everything. If
+you narrow that to a dedicated account, read access becomes the thing you
+have to think about, because a backup agent silently skips what it cannot
+read: you get a backup that looks like it worked and is missing files.
+
+**`ReadOnlyPaths` does not grant access.** The unit lists `backupPaths`
+under systemd's `ReadOnlyPaths`, which only marks them read-only inside the
+unit's own mount namespace. Ordinary Unix permissions still decide what the
+service uid can open. Listing a path there does not make it readable.
+
+Three ways to actually grant read access, in increasing order of privilege:
+
+**1. `supplementaryGroups`** - use when the data is already group-readable.
+
+```nix
+services.idrive = {
+  user = "idrive";
+  group = "idrive";
+  supplementaryGroups = [ "media" ];
+};
+```
+
+Grants exactly that group's access and nothing else. This is the tightest
+option, and the one to reach for first.
+
+**2. Default ACLs** - use when the data is not group-readable but the set of
+paths is known and stable. This is host state the module does not manage:
+
+```
+setfacl -R -m u:idrive:rX /srv/data
+setfacl -R -d -m u:idrive:rX /srv/data
+```
+
+The second line sets a *default* ACL so files created later inherit it.
+Without it, anything added after you run this is unreadable again.
+
+**3. `readAllFiles = true`** - use when the backup set is broad or
+unpredictable enough that neither of the above is practical.
+
+```nix
+services.idrive = {
+  user = "idrive";
+  group = "idrive";
+  readAllFiles = true;
+};
+```
+
+This grants the `CAP_DAC_READ_SEARCH` capability, which bypasses file read
+and directory search permission checks system-wide. Be clear-eyed about it:
+the service can then read any file root could read. What it buys over
+running as root is that it grants no write, execute, or other capability, so
+the client still cannot modify or delete anything outside what its own
+user, group, and supplementary groups allow. It is not a guarantee of
+access either: SELinux, AppArmor, or a filesystem that refuses the
+capability can still deny a read.
+
+`createUser` defaults to true, so setting `user` to something other than
+`root` makes the module define that system account for you. Set it to false
+if you manage the account yourself.
+
+### Restore is the weak direction
+
+Reading is solvable. Writing back is not, and you should decide this before
+you need a restore rather than during one.
+
+Restored files are created by the service's uid, with the unit's umask. Two
+consequences:
+
+- **Ownership.** They come back owned by the service user, not by whoever
+  owned them originally. Restoring the original ownership requires
+  `CAP_CHOWN` plus `CAP_FOWNER` to write into directories the service does
+  not own, and granting those amounts to rebuilding root. The capability
+  split stops buying you anything at that point.
+- **Modes.** systemd's default umask is `0022`, so a file that was `0600`
+  can come back `0644`, readable by anyone who can reach the restore
+  location. `services.idrive.umask` sets the unit's `UMask` if you want to
+  pin this; it defaults to null, meaning the module does not change
+  restore behavior on its own.
+
+The practical recommendations:
+
+- Run restores as root (`user = "root"`, the default) if you need ownership
+  and modes preserved.
+- Or restore to a staging directory the service user owns, then move the
+  files into place and fix ownership yourself, where you can see exactly
+  what you are changing.
+- Either way, do a test restore of a small path before you rely on this, and
+  check the resulting owner and mode. That is the only way to find out what
+  the client actually preserves in your setup.
+
+`supplementaryGroups`, `readAllFiles`, `umask`, and `createUser` apply to
+`backend = "native"` only. The containerized client runs as the image's own
+root user, which the module cannot substitute, and setting any of them
+alongside `backend = "container"` fails evaluation rather than doing nothing
+quietly.
+
 ## Migration from the old Docker image
 
 If you are moving from the original `snorre0815/idrive-docker` /
