@@ -1,6 +1,14 @@
 { writeShellApplication, coreutils, tzdata, idrive-client }:
 
-{
+let
+  # Name of the writable application directory mkPrepare builds inside
+  # stateDir. Exported below so callers can address the entry points it
+  # creates (idrive, idrivecron) without hardcoding the name a second time.
+  appSubdir = ".app";
+in
+rec {
+  inherit appSubdir;
+
   mkPrepare = { stateDir, timeZone }:
     writeShellApplication {
       name = "idrive-prepare";
@@ -9,11 +17,13 @@
         set -euo pipefail
 
         state="${stateDir}"
+        appsrc="${idrive-client}/opt/IDriveForLinux/bin"
         shipped="${idrive-client}/opt/IDriveForLinux/idriveIt"
+        app="$state/${appSubdir}"
         stamp="$state/.idrive-version"
         pkgstamp="$state/.idrive-package"
 
-        mkdir -p "$state"
+        mkdir -p "$state" "$app"
 
         # The vendor tree ships content (idevsutil binaries) inside the same
         # directory that holds mutable state (user_profile, cache,
@@ -44,6 +54,81 @@
         fi
         printf '%s\n' "${idrive-client.version}" > "$stamp"
 
+        # The client resolves its own installation directory from $0:
+        # "loadAppPath { my $absFile = getAbsPath($0); $appPath =
+        # getCatfile(dirname($absFile), ""); }" with getAbsPath being Perl's
+        # abs_path, which fully resolves symlinks. Every entry point the
+        # package itself exposes therefore lands appPath inside the
+        # read-only store, and the client needs that directory writable and
+        # needs to find "<appPath>/.serviceLocation" there naming the state
+        # directory. Without it, loadServicePath() fails and the client
+        # falls back to createServiceDirectory(), which retreats with
+        # "Cannot open directory <store path> Permission denied" during
+        # --account-setting, and to setServicePath(".") - the process cwd -
+        # under --cron, so state never reaches stateDir at all.
+        #
+        # So build a writable application directory here: every entry of the
+        # package's bin/ mirrored as a symlink (reads resolve into the store
+        # exactly as before), plus two things that must not be symlinks:
+        #
+        #   idrive           a real-file copy of the update-blocking wrapper.
+        #                    A symlink would make abs_path($0) resolve
+        #                    straight back into the store and defeat the
+        #                    whole point. Being a copy of the wrapper (not of
+        #                    the raw binary) is what keeps getBinaryPath() -
+        #                    "<appPath>/idrive", used by the client's own
+        #                    scheduleAutoUpdateCRON, doDirectAppUpdate and
+        #                    isUpdateAvailable - pointing at a wrapper that
+        #                    still refuses to self-update.
+        #   .serviceLocation the state directory, read by loadServicePath().
+        #
+        # and one thing that must be a symlink:
+        #
+        #   idrivecron       the daemon entry point. The client's cron/
+        #                    service mode refuses to start unless $0 names a
+        #                    symlink ("unless(-l $0){... saferetreat(
+        #                    'you_cant_run_supporting_service')}"), which is
+        #                    why upstream's old Dockerfile invoked --cron
+        #                    through "ln -s .../bin/idrive /etc/idrivecron".
+        #                    Its abs_path is the wrapper copy above, so
+        #                    appPath still resolves here and not to the
+        #                    store.
+        #
+        # Nothing writes into the mirrored store paths: setup's dependency
+        # check would extract into "<appPath>/Idrivelib/dependencies/evsbin"
+        # only when hasEVSBinary() finds no usable idevsutil in the state
+        # directory, and the staging step above put them there first.
+        shopt -s dotglob nullglob
+
+        # Drop mirror entries left by a previously installed package, so a
+        # package change cannot leave a stale name behind. Only symlinks
+        # into the store are considered: idrivecron points inside this
+        # directory, and anything the client itself writes here is a real
+        # file.
+        for f in "$app"/*; do
+          [ -L "$f" ] || continue
+          case "$(readlink "$f")" in
+            "$appsrc"/*) ;;
+            /nix/store/*) rm -f "$f" ;;
+          esac
+        done
+
+        for f in "$appsrc"/*; do
+          case "$(basename "$f")" in
+            idrive | .serviceLocation) continue ;;
+          esac
+          ln -sfn "$f" "$app/$(basename "$f")"
+        done
+
+        shopt -u dotglob nullglob
+
+        # Removed first: the store copy is mode 0555, so a plain overwrite
+        # of a previous run's copy would fail for a non-root caller.
+        rm -f "$app/idrive"
+        install -m 0755 "$appsrc/idrive" "$app/idrive"
+        ln -sfn "$app/idrive" "$app/idrivecron"
+        printf '%s\n' "$state" > "$app/.serviceLocation"
+
         # The client expects this file to exist before it starts. Upstream
         # requires bind mount users to touch it by hand first.
         [ -f "$state/idrivecrontab.json" ] || : > "$state/idrivecrontab.json"
@@ -60,6 +145,33 @@
           echo "idrive-prepare: unknown timezone '${timeZone}': no such zoneinfo file ${tzdata}/share/zoneinfo/${timeZone}" >&2
           exit 1
         fi
+      '';
+    };
+
+  # The single entry point both backends run the client through, and the
+  # one that goes on PATH for interactive use. It prepares the writable
+  # application directory (see mkPrepare) and then execs the copy of the
+  # wrapper that lives there, so the client resolves its own appPath to a
+  # writable directory instead of the store. --cron is routed through the
+  # idrivecron symlink because the client refuses that mode unless $0 is a
+  # symlink; everything else runs through the regular-file copy, whose
+  # abs_path is the same directory either way.
+  mkLauncher = { stateDir, timeZone }:
+    let
+      prepare = mkPrepare { inherit stateDir timeZone; };
+    in
+    writeShellApplication {
+      name = "idrive";
+      text = ''
+        set -euo pipefail
+
+        "${prepare}/bin/idrive-prepare"
+
+        app="${stateDir}/${appSubdir}"
+        if [ "''${1:-}" = "--cron" ]; then
+          exec "$app/idrivecron" "$@"
+        fi
+        exec "$app/idrive" "$@"
       '';
     };
 }

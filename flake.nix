@@ -67,6 +67,9 @@
           package-cron-guard = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
             inherit idrive-client;
           };
+          client-uses-statedir = pkgs.callPackage ./nix/tests/client-uses-statedir.nix {
+            inherit idrive-client;
+          };
           prepare-script = pkgs.callPackage ./nix/tests/prepare-script.nix {
             inherit idrive-client;
           };

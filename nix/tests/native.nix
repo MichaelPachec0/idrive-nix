@@ -52,13 +52,43 @@ pkgs.testers.runNixOSTest {
         "journalctl -u idrive.service | grep -q 'Launch the service using service manager'"
     )
 
-    # ExecStartPre (the prepare step) ran: state directory created and seeded.
+    # ExecStartPre (the prepare step) ran to completion before ExecStart -
+    # that ordering is exactly why it is an ExecStartPre and not the first
+    # thing ExecStart does: under Type=simple systemd reports the service
+    # started as soon as ExecStart is forked, so a prepare step living
+    # there would still be running when these assertions fire. State
+    # directory created and seeded,
+    # including the writable application directory the client resolves its
+    # own appPath to (see nix/start.nix).
     machine.succeed("test -d /var/lib/idrive")
     machine.succeed("test -f /var/lib/idrive/idrivecrontab.json")
     machine.succeed("test -f /var/lib/idrive/.idrive-version")
+    machine.succeed("test -f /var/lib/idrive/.app/idrive")
+    machine.succeed("test ! -L /var/lib/idrive/.app/idrive")
+    machine.succeed("test -L /var/lib/idrive/.app/idrivecron")
+    machine.succeed("grep -qx /var/lib/idrive /var/lib/idrive/.app/.serviceLocation")
 
     # The wrapped client is on PATH for interactive account setup.
     machine.succeed("idrive --version")
+
+    # The documented first-run command, run exactly as the README tells an
+    # operator to run it, driven only as far as its own authentication menu
+    # (no credentials needed, and none exist in CI). Before the writable
+    # application directory existed this died with "Cannot open directory
+    # <store path> Permission denied" right here.
+    setup = machine.succeed(
+        "timeout 300 idrive --account-setting < /dev/null 2>&1; true"
+    )
+    assert "Login using IDrive credentials" in setup, (
+        f"idrive --account-setting never reached its login prompt: {setup}"
+    )
+
+    # The one assertion in this suite that only the client itself can
+    # satisfy: everything under user_profile/ is written by the client, and
+    # nothing in the prepare step creates it. It is the direct evidence
+    # that the client resolved its service path to stateDir instead of to
+    # the store or to its own cwd.
+    machine.succeed("test -f /var/lib/idrive/user_profile/root/.trace/traceLog.txt")
 
     # Self-update must refuse, not partially apply. This is the end-to-end
     # proof of the whole design: the wrapped binary from

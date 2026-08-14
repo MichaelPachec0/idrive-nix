@@ -5,7 +5,19 @@ let
   inherit (lib) mkIf mkOption mkEnableOption mkPackageOption types;
 
   startLib = pkgs.callPackage ./start.nix { idrive-client = cfg.package; };
+
   prepare = startLib.mkPrepare {
+    inherit (cfg) stateDir timeZone;
+  };
+
+  # The interactive entry point: it runs the prepare step and then execs
+  # the client out of the writable application directory that step builds
+  # inside stateDir, so the client's own appPath resolution lands there
+  # instead of in the read-only store (see nix/start.nix for the
+  # mechanism). The unit below reaches the same prepared directory through
+  # ExecStartPre plus a direct ExecStart, so interactive setup and the
+  # daemon cannot end up resolving state differently.
+  launcher = startLib.mkLauncher {
     inherit (cfg) stateDir timeZone;
   };
 
@@ -171,7 +183,17 @@ in
       ];
     }
     (mkIf (cfg.enable && cfg.backend == "native") {
-    environment.systemPackages = [ cfg.package ];
+    # hiPrio on the launcher, and both entries rather than just one: the
+    # launcher owns bin/idrive (the documented `sudo idrive
+    # --account-setting` entry point, which only works when it runs through
+    # the writable application directory), while the package still supplies
+    # the idevsutil* transfer utilities. Without hiPrio the two collide on
+    # bin/idrive and the environment build fails.
+    #
+    # Run interactive setup as the service user (root by default), the same
+    # user the unit runs as: whoever runs the launcher first owns the files
+    # it creates under stateDir.
+    environment.systemPackages = [ (lib.hiPrio launcher) cfg.package ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
@@ -203,7 +225,18 @@ in
         # the operator finishes account setup, since that exit is not a
         # failure. A manual `systemctl restart idrive` is required once
         # setup completes.
-        ExecStart = "${cfg.package}/bin/idrive --cron";
+        # Not "${launcher}/bin/idrive --cron": the launcher runs the prepare
+        # step itself, and under Type=simple systemd considers the service
+        # started the moment ExecStart is forked, so preparing from there
+        # would let "systemctl start idrive" return while the state
+        # directory is still being seeded. Keeping the prepare step in
+        # ExecStartPre preserves systemd's own ordering guarantee, and
+        # leaves ExecStart as exactly what the launcher would have exec'd:
+        # the idrivecron symlink in the prepared application directory,
+        # which is what makes the client's appPath resolve to a writable
+        # directory and satisfies its "--cron only through a symlink"
+        # guard (see nix/start.nix).
+        ExecStart = "${cfg.stateDir}/${startLib.appSubdir}/idrivecron --cron";
 
         NoNewPrivileges = true;
         ProtectSystem = "strict";

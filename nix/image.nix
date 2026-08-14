@@ -14,30 +14,33 @@ let
   stateDir = "/opt/IDriveForLinux/idriveIt";
 
   startLib = callPackage ./start.nix { inherit idrive-client; };
-  prepare = startLib.mkPrepare {
+
+  # The same launcher the native systemd unit uses as its ExecStart: it
+  # prepares the state directory (including the writable application
+  # directory the client resolves its own appPath to) and execs the client
+  # through it. Sharing it is what stops the two backends from drifting.
+  # It is listed ahead of idrive-client in runtimeInputs below so a bare
+  # "idrive" resolves to it and not to the package's own bin/idrive, whose
+  # appPath would be the read-only store.
+  idrive = startLib.mkLauncher {
     inherit stateDir timeZone;
   };
 
-  # The image runs the same prepare step the native systemd unit runs as
-  # ExecStartPre. Sharing it is what stops the two backends from drifting.
-  launcher = writeShellApplication {
+  entrypoint = writeShellApplication {
     name = "idrive-entrypoint";
-    runtimeInputs = [ idrive-client ];
+    runtimeInputs = [ idrive idrive-client ];
     text = ''
       set -euo pipefail
-      "${prepare}/bin/idrive-prepare"
 
       # No command override (the container's real, intended use: run as the
       # backup daemon) defaults to "idrive --cron"; an explicit override
       # (e.g. `idrive --version` for interactive diagnostics, as podman
       # passes it: CMD's own first token is already the program name, not
       # just its arguments) is used as-is. Either way "idrive" is resolved
-      # through PATH (runtimeInputs above) by the shell running this exec,
-      # which passes the resulting absolute path to execve(2); nothing
-      # about that path is slash-less by the time the wrapper's own $0
-      # inspection (nix/wrappers.nix) sees it, so the wrapper's ordinary
-      # absolute-path handling satisfies the client's `unless(-l $0)` guard
-      # on --cron here the same way it does for every other entry point.
+      # through PATH (runtimeInputs above) to the launcher, which runs the
+      # prepare step and then routes --cron through the idrivecron symlink
+      # in the writable application directory, satisfying the client's
+      # `unless(-l $0)` guard (see nix/start.nix and nix/wrappers.nix).
       # set -- (not a plain default in the exec line) is deliberate: "$@"
       # must become exactly ("idrive" "--cron"), the same shape podman
       # would hand us for an explicit override, not "idrive" plus a
@@ -82,7 +85,7 @@ dockerTools.buildLayeredImage {
   ];
 
   config = {
-    Entrypoint = [ "${launcher}/bin/idrive-entrypoint" ];
+    Entrypoint = [ "${entrypoint}/bin/idrive-entrypoint" ];
     Env = [
       # Not en_US.UTF-8: this image ships no locale data (the old Ubuntu
       # image installed locales-all; pulling in glibcLocales here just to

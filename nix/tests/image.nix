@@ -43,5 +43,25 @@ pkgs.testers.runNixOSTest {
     assert "Launch the service using service manager" not in result, (
         f"cron symlink guard fired: {result}"
     )
+
+    # The client must resolve its own state into the mounted volume, not
+    # into the image's read-only store paths and not into its working
+    # directory. --account-setting reaches its own authentication menu with
+    # no credentials, and everything it writes under user_profile/ is
+    # written by the client itself - the entrypoint's prepare step creates
+    # no such path - so seeing that tree on the host is direct evidence the
+    # volume is where the client actually lives.
+    machine.succeed("mkdir -p /var/lib/idrive-volume")
+    setup = machine.succeed(
+        "timeout 300 podman run --rm"
+        " -v /var/lib/idrive-volume:/opt/IDriveForLinux/idriveIt"
+        " ${image} idrive --account-setting 2>&1; true"
+    )
+    assert "Login using IDrive credentials" in setup, (
+        f"idrive --account-setting never reached its login prompt: {setup}"
+    )
+    machine.succeed(
+        "test -f /var/lib/idrive-volume/user_profile/root/.trace/traceLog.txt"
+    )
   '';
 }
