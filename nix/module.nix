@@ -21,6 +21,12 @@ let
     inherit (cfg) stateDir timeZone;
   };
 
+  # The per-user counterpart, resolving its state directory under the
+  # invoking user's home rather than a fixed system path.
+  userLauncher = startLib.mkUserLauncher {
+    inherit (cfg) timeZone;
+  };
+
   # Existing profiles address backup sets as /source/1, /source/2, and so on,
   # because that is how the container maps them. Recreating those names on the
   # host lets a migrated profile keep working untouched.
@@ -187,6 +193,37 @@ in
       default = [ ];
       example = [ "/srv/data" "/home/alice/documents" ];
       description = "Paths made available to the client for backup.";
+    };
+
+    userServices = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "alice" "bob" ];
+      description = ''
+        Users to run a per-user iDrive service for, as a systemd user
+        service. Each listed user gets their own iDrive account, profile,
+        schedule and state directory (under XDG_STATE_HOME, so
+        ~/.local/state/idrive by default), independent of every other user
+        and of the system-wide service.
+
+        This is the right shape when separate people back up their own
+        files with separate iDrive accounts. No privilege is involved:
+        each user's own uid already owns what it backs up, so none of
+        readAllFiles, supplementaryGroups or ACLs is needed, and restoring
+        into their own home needs no writablePaths entry either. The
+        system-wide service is the other shape: one account covering the
+        whole machine, which is what needs those options.
+
+        Both can run on the same machine. They are separate services with
+        separate state, and the interactive command differs: idrive for the
+        system service, idrive-user for a per-user one, because two
+        different commands cannot share one name on PATH.
+
+        Lingering is enabled for each listed user. Without it their user
+        manager stops at logout and their backups stop with it, which is
+        not a property anyone would want to discover from a missing
+        restore point.
+      '';
     };
 
     writablePaths = mkOption {
@@ -517,6 +554,50 @@ in
       systemd.tmpfiles.rules = [
         "d ${cfg.stateDir} 0700 root root -"
       ];
+    })
+
+    # Per-user services. Independent of services.idrive.enable and of
+    # backend: this is a different shape of deployment (one account per
+    # person) rather than a variant of the system-wide one, and a machine
+    # can legitimately run both.
+    (mkIf (cfg.userServices != [ ]) {
+      environment.systemPackages = [ userLauncher ];
+
+      # Without lingering, a user's systemd manager exits when their last
+      # session ends, taking the backup service with it. A backup that only
+      # runs while you are logged in is not one you would want to find out
+      # about during a restore.
+      users.users = lib.genAttrs cfg.userServices (_: { linger = true; });
+
+      systemd.user.services.idrive = {
+        description = "IDrive backup client (per-user)";
+        wantedBy = [ "default.target" ];
+
+        # systemd.user units are defined for every user on the machine, so
+        # the unit itself has to decide who it runs for.
+        #
+        # The pipe prefix is load-bearing. From systemd.unit(5): "If
+        # multiple conditions are specified, the unit will be executed if
+        # all of them apply (i.e. a logical AND is applied)", and a pipe
+        # after the equals sign makes a condition "triggering", where "the
+        # unit will be started if at least one of the triggering conditions
+        # of the unit applies". Plain ConditionUser= lines would therefore
+        # AND together, no user would be all of the listed users at once,
+        # and the service would silently never start for anybody.
+        unitConfig.ConditionUser = map (u: "|${u}") cfg.userServices;
+
+        serviceConfig = {
+          Type = "simple";
+          Restart = "on-failure";
+          RestartSec = 10;
+          ExecStart = "${userLauncher}/bin/idrive-user --cron";
+        };
+
+        environment = {
+          TZ = cfg.timeZone;
+          LC_ALL = "en_US.UTF-8";
+        };
+      };
     })
   ];
 }
