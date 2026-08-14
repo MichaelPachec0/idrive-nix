@@ -17,6 +17,17 @@ let
     cfg.backupPaths;
 
   usesDefaultStateDir = cfg.stateDir == "/var/lib/idrive";
+
+  # Matches nix/image.nix's `dockerTools.buildLayeredImage { name =
+  # "idrive-docker"; tag = idrive-client.version; ... }` exactly. The image
+  # derivation itself is not an input to this module (a NixOS module only
+  # receives config/lib/pkgs from the module system, not arbitrary flake
+  # outputs), so the default is tied to cfg.package.version instead: as long
+  # as services.idrive.package is the same idrive-client build that produced
+  # the image, this string and the image's own imageName:imageTag passthru
+  # agree. A user building the image from a different package is expected to
+  # set services.idrive.container.image explicitly.
+  defaultContainerImage = "idrive-docker:${cfg.package.version}";
 in
 {
   options.services.idrive = {
@@ -81,14 +92,64 @@ in
       type = types.bool;
       default = false;
       description = ''
-        Create /source/N symlinks to backupPaths, matching the container
-        layout, so backup sets configured against the Docker image keep
-        working after migrating to the native backend.
+        Applies only to backend = "native". Create /source/N symlinks to
+        backupPaths, matching the old Docker image's layout, so backup sets
+        configured against that image keep working after migrating to the
+        native backend. The container backend gets /source/N from its own
+        volume mappings instead, so this option has nothing to do there;
+        setting it alongside backend = "container" is a configuration error
+        and fails evaluation.
       '';
+    };
+
+    container = {
+      runtime = mkOption {
+        type = types.enum [ "podman" "docker" ];
+        default = "podman";
+        description = "Container runtime used by the container backend.";
+      };
+
+      imageFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Image tarball to load before running the container, normally the
+          flake's idrive-image output. Loading from a file avoids needing a
+          registry at all; the image reference (see the `image` option) must
+          still name the same image and tag this tarball contains.
+        '';
+      };
+
+      image = mkOption {
+        type = types.str;
+        default = defaultContainerImage;
+        defaultText = lib.literalExpression ''"idrive-docker:''${package.version}"'';
+        description = ''
+          Image reference to run, as "name:tag". Defaults to this flake's
+          own OCI image (nix/image.nix), tagged with the running package's
+          version, which is how that image is actually built and how
+          `imageFile` above is expected to be loaded. Override this when
+          pointing at a different image, e.g. one pulled from a registry.
+        '';
+      };
     };
   };
 
-  config = mkIf (cfg.enable && cfg.backend == "native") {
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !(cfg.enable && cfg.backend == "container" && cfg.legacySourceLinks);
+          message = ''
+            services.idrive.legacySourceLinks has no effect under backend =
+            "container": /source/N there comes from container.imageFile's
+            volume mappings, not host symlinks. Unset legacySourceLinks, or
+            switch backend to "native".
+          '';
+        }
+      ];
+    }
+    (mkIf (cfg.enable && cfg.backend == "native") {
     environment.systemPackages = [ cfg.package ];
 
     systemd.tmpfiles.rules = [
@@ -143,5 +204,32 @@ in
         StateDirectoryMode = "0700";
       };
     };
-  };
+    })
+    (mkIf (cfg.enable && cfg.backend == "container") {
+      virtualisation.oci-containers = {
+        backend = cfg.container.runtime;
+        containers.idrive = {
+          inherit (cfg.container) image imageFile;
+          autoStart = true;
+          environment = {
+            TZ = cfg.timeZone;
+          };
+          # Reproduces the upstream image's own address scheme exactly:
+          # stateDir at the container's fixed idriveIt path, and each
+          # backupPaths entry at /source/N:ro, numbered from 1. Existing
+          # backup sets are configured against those exact paths, so this
+          # ordering and numbering must not change.
+          volumes = [
+            "${cfg.stateDir}:/opt/IDriveForLinux/idriveIt"
+          ] ++ lib.imap1
+            (i: path: "${path}:/source/${toString i}:ro")
+            cfg.backupPaths;
+        };
+      };
+
+      systemd.tmpfiles.rules = [
+        "d ${cfg.stateDir} 0700 root root -"
+      ];
+    })
+  ];
 }

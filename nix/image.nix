@@ -65,12 +65,33 @@ dockerTools.buildLayeredImage {
     coreutils
     cacert
     tzdata
+    # Without a /etc/passwd entry for uid 0, any getpwuid(0) lookup fails -
+    # observed directly as "whoami: cannot find name for user ID 0" in this
+    # image's own container logs. The client's own startup calls whoami to
+    # populate $AppConfig::mcUser, and leaves it uninitialized when that
+    # lookup fails; mcUser in turn is used to build the user_profile/<user>
+    # path the client reads its account state from. A missing or wrong
+    # profile path is exactly the class of failure this whole packaging
+    # effort exists to prevent, so this is not cosmetic. fakeNss supplies
+    # /etc/passwd and /etc/group entries for root (and nobody); binSh gives
+    # those entries' /bin/sh a real target instead of a dangling reference
+    # (bashInteractive above already provides an interactive shell for
+    # -it use; binSh only wires the passwd/group entries to it).
+    dockerTools.fakeNss
+    dockerTools.binSh
   ];
 
   config = {
     Entrypoint = [ "${launcher}/bin/idrive-entrypoint" ];
     Env = [
-      "LC_ALL=en_US.UTF-8"
+      # Not en_US.UTF-8: this image ships no locale data (the old Ubuntu
+      # image installed locales-all; pulling in glibcLocales here just to
+      # get one locale would bloat this image for a backup agent that does
+      # not need it). C.UTF-8 is glibc's own built-in UTF-8 locale - no
+      # locale-archive required - and stops every bash invocation in the
+      # entrypoint from printing "setlocale: LC_ALL: cannot change locale
+      # (en_US.UTF-8): No such file or directory".
+      "LC_ALL=C.UTF-8"
       "TZ=${timeZone}"
       # dockerTools.buildLayeredImage symlinks tzdata's top-level share/
       # directory into the image root, giving /share/zoneinfo; glibc's own
