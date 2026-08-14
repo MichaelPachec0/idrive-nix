@@ -1,0 +1,81 @@
+name: Update pinned iDrive version
+
+# Two independent automations share this file because they are both "check
+# upstream, open a PR if something moved" jobs with no other workflow to
+# live in. Each schedule entry drives exactly one job (matched by cron
+# string below) so they do not double-run each other; workflow_dispatch
+# runs both, for a manual "refresh everything" trigger.
+on:
+  schedule:
+    # Daily: refresh nix/sources.json against the upstream download page.
+    # Phase 0 established that page always serves the current release with
+    # no version selector, so the pinned hash in nix/sources.json stops
+    # resolving as soon as upstream ships a new release (unless the old
+    # artifact is still cached somewhere). Staying close to upstream here
+    # is what keeps that window of unbuildability short.
+    - cron: "12 9 * * *"
+    # Weekly (Monday): update flake.lock (nixpkgs and other flake inputs).
+    # Kept on a slower cadence and in its own job/PR: this is normal
+    # dependency hygiene, not chasing a rotating URL, and a bad nixpkgs
+    # bump should be reviewable and revertable independently of the daily
+    # version pin.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update-pin:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '12 9 * * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      # nix/update.sh exits non-zero (with an explicit message on stderr) if
+      # the upstream scrape fails to find both a version and a URL, so a
+      # broken scrape fails this step and the job rather than silently
+      # doing nothing. GitHub's default behaviour for a failed scheduled
+      # workflow run (a red run in the Actions tab, plus an email to
+      # whoever last edited this file) is what makes that visible; nothing
+      # extra was added on top of that default.
+      - name: Refresh nix/sources.json
+        run: nix run .#update
+
+      - name: Open a pull request when the pin changed
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: "chore(nix): pin new iDrive client version"
+          title: "chore(nix): pin new iDrive client version"
+          body: |
+            Automated pin refresh from the upstream version manifest.
+            The client's own updater is disabled in this package, so the
+            pinned version is the only way the client changes.
+          branch: automation/pin-idrive
+
+  update-flake-lock:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 9 * * 1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Open a pull request when flake.lock changed
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: "chore(nix): update flake.lock"
+          title: "chore(nix): update flake.lock"
+          body: |
+            Automated weekly refresh of flake.lock (nixpkgs and any other
+            flake inputs). Published images otherwise never pick up
+            base-OS or nixpkgs updates once this pin stops moving.
+          branch: automation/update-flake-lock
