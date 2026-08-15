@@ -1,4 +1,4 @@
-# idrive-docker
+# idrive-nix
 
 A Nix flake that packages the proprietary iDrive Linux backup client. It
 provides a package derivation, a NixOS module (native systemd service or
