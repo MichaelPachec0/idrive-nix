@@ -34,7 +34,7 @@ let
     stateExpr = ''"${cfg.stateDir}"'';
     launcher = namedLauncher;
     launcherBin = "idrive";
-    inherit (cfg) username usernameFile passwordFile;
+    inherit (cfg) username usernameFile passwordFile encryptionKeyFile;
   };
 
   # deviceName has to reach the interactive command as well as the unit, not
@@ -299,6 +299,31 @@ in
       '';
     };
 
+    encryptionKeyFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = "/run/secrets/idrive-encryption-key";
+      description = ''
+        File holding your IDrive private encryption key, for accounts that
+        use one instead of IDrive's own key. Read at setup time, like
+        passwordFile, and never written anywhere.
+
+        Null (the default) answers IDrive's setup prompt with the default
+        encryption key, which is what an account without a private key
+        wants. Setting it answers with the private key instead and supplies
+        the key.
+
+        The key cannot contain whitespace; IDrive rejects that itself, and
+        this module checks before sending anything so the failure arrives
+        without a round trip.
+
+        This decides how backups are encrypted at the point the account is
+        first configured, and IDrive cannot recover data encrypted with a
+        private key it never had. Losing this file means losing the
+        backups, so keep it wherever you keep things you cannot regenerate.
+      '';
+    };
+
     deviceName = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -515,6 +540,16 @@ in
             have this module perform account setup, or neither, to do it
             interactively. Setting one alone would leave setup half
             specified and still waiting for a person.
+          '';
+        }
+        {
+          assertion = !(cfg.encryptionKeyFile != null && cfg.passwordFile == null);
+          message = ''
+            services.idrive.encryptionKeyFile only takes effect during the
+            account setup this module performs, which needs passwordFile
+            (and username or usernameFile) as well. On its own it would
+            answer a prompt nobody reaches. Set the credentials too, or run
+            setup interactively and supply the key there.
           '';
         }
         {

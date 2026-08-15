@@ -255,6 +255,23 @@ services.idrive = {
 
 Set one of `username` or `usernameFile`, not both.
 
+If your account uses a private encryption key rather than IDrive's own,
+supply it the same way:
+
+```nix
+services.idrive.encryptionKeyFile = config.sops.secrets.idrive-enckey.path;
+```
+
+IDrive asks how backups are encrypted during setup, for every account, so
+this is answered either way: left unset it accepts IDrive's key, and set it
+supplies yours. The key cannot contain whitespace, which this module checks
+before sending anything rather than letting the client reject it after the
+password has already gone over the wire.
+
+Treat that file as unrecoverable. IDrive cannot decrypt data encrypted with
+a private key it never held, so losing the file loses the backups. It is
+the one secret here that cannot be reissued by resetting something.
+
 Be clear about what that buys: it keeps the account name out of the store,
 not out of the journal. The client prints the name in its own messages
 (`Failed to authenticate user "..."`), so a failed setup still shows it.
