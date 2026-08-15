@@ -4,7 +4,7 @@ A Nix flake that packages the proprietary iDrive Linux backup client. It
 provides a package derivation, a NixOS module (native systemd service or
 containerized), and an OCI image built with Nix.
 
-GitHub: https://github.com/MichaelPachec0/idrive-docker
+GitHub: https://github.com/MichaelPachec0/idrive-nix
 
 The client is proprietary software, so any consumer of this flake must set
 `nixpkgs.config.allowUnfree = true`. Without it, evaluation fails with an
@@ -20,7 +20,7 @@ The client is proprietary software, so any consumer of this flake must set
 
 ```nix
 {
-  inputs.idrive.url = "github:MichaelPachec0/idrive-docker";
+  inputs.idrive.url = "github:MichaelPachec0/idrive-nix";
 
   outputs = { nixpkgs, idrive, ... }: {
     nixosConfigurations.host = nixpkgs.lib.nixosSystem {
