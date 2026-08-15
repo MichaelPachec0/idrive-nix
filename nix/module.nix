@@ -27,13 +27,14 @@ let
     inherit (cfg) timeZone;
   };
 
-  automaticSetup = cfg.username != null && cfg.passwordFile != null;
+  automaticSetup =
+    (cfg.username != null || cfg.usernameFile != null) && cfg.passwordFile != null;
 
   setup = startLib.mkSetup {
     stateExpr = ''"${cfg.stateDir}"'';
     launcher = namedLauncher;
     launcherBin = "idrive";
-    inherit (cfg) username passwordFile;
+    inherit (cfg) username usernameFile passwordFile;
   };
 
   # deviceName has to reach the interactive command as well as the unit, not
@@ -247,6 +248,27 @@ in
 
         Null (the default) leaves setup interactive, which is what the
         client is designed for.
+      '';
+    };
+
+    usernameFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = "/run/secrets/idrive-username";
+      description = ''
+        File holding the account name, as an alternative to username, read
+        at setup time rather than baked into the setup script. Use this to
+        keep the account name out of the Nix store, which is world
+        readable, by pointing it at a secret your secret manager decrypts
+        at activation.
+
+        Set either this or username, not both.
+
+        Worth knowing: this keeps the name out of the store, not out of the
+        journal. The client prints the account name in its own messages
+        (Failed to authenticate user "..."), so a failed setup will still
+        show it. Treat it as an identifier worth not publishing rather than
+        as a secret in the sense the password is.
       '';
     };
 
@@ -475,12 +497,24 @@ in
           '';
         }
         {
-          assertion = (cfg.username == null) == (cfg.passwordFile == null);
+          assertion = !(cfg.username != null && cfg.usernameFile != null);
           message = ''
-            services.idrive.username and services.idrive.passwordFile go
-            together: either set both, to have this module perform account
-            setup, or neither, to do it interactively. Setting one alone
-            would leave setup half specified and still waiting for a person.
+            services.idrive.username and services.idrive.usernameFile name
+            the same thing two ways. Set username for a plain value, or
+            usernameFile to read it at setup time and keep it out of the
+            Nix store, but not both.
+          '';
+        }
+        {
+          assertion =
+            (cfg.username == null && cfg.usernameFile == null)
+            == (cfg.passwordFile == null);
+          message = ''
+            An account name (services.idrive.username or usernameFile) and
+            services.idrive.passwordFile go together: either set both, to
+            have this module perform account setup, or neither, to do it
+            interactively. Setting one alone would leave setup half
+            specified and still waiting for a person.
           '';
         }
         {
