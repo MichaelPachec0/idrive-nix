@@ -114,6 +114,29 @@ pkgs.testers.runNixOSTest {
         f"setup did not reach authentication at all: {auth}"
     )
 
+    # The client stamps every request with an OS name and build, taken from
+    # /etc/os-release. Its parser needs a newline after VERSION_ID's closing
+    # quote, which NixOS does not provide because VERSION_ID is the last
+    # line and the client chomps the file first. Without the cat shim it
+    # falls through to a branch that sends the HOSTNAME as the operating
+    # system with build 0, and IDrive answers Invalid_arguments for every
+    # account, valid or not.
+    #
+    # The client writes what it decided into its own trace log, so this is
+    # assertable with no credentials at all.
+    trace = machine.succeed(
+        "cat /var/lib/idrive/user_profile/root/.trace/traceLog.txt"
+    )
+    assert "OS details" in trace, f"no OS details line in the trace log: {trace}"
+    os_line = [ln for ln in trace.splitlines() if "OS details" in ln][-1]
+    assert "nixos" in os_line, (
+        f"the client did not identify the OS correctly, so its requests will"
+        f" be rejected: {os_line!r}"
+    )
+    assert "machine" not in os_line, (
+        f"the client sent the hostname as its operating system: {os_line!r}"
+    )
+
     # Self-update must refuse, not partially apply. This is the end-to-end
     # proof of the whole design: the wrapped binary from
     # environment.systemPackages, invoked exactly as an operator would.
