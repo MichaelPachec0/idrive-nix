@@ -12,6 +12,7 @@ pkgs.testers.runNixOSTest {
     systemd.tmpfiles.rules = [
       "f /run/idrive-password 0400 root root - NotARealPassword123"
       "f /run/idrive-username 0400 root root - nobody@invalid.example"
+      "f /run/idrive-enckey 0400 root root - NotARealEncryptionKey456"
     ];
 
     # usernameFile rather than username, so the account name is read at
@@ -24,6 +25,7 @@ pkgs.testers.runNixOSTest {
       package = idrive-client;
       usernameFile = "/run/idrive-username";
       passwordFile = "/run/idrive-password";
+      encryptionKeyFile = "/run/idrive-enckey";
       timeZone = "Etc/UTC";
     };
   };
@@ -79,6 +81,16 @@ pkgs.testers.runNixOSTest {
         " | sed -n 's/^ExecStart=//p' | head -n1"
     ).strip()
     machine.fail(f"grep -q nobody@invalid.example {setup_script}")
+
+    # The encryption key gets the same treatment as the password: read at
+    # setup time, kept out of the store, and redacted from anything this
+    # module logs. Losing it means losing the backups, so it is the one
+    # secret here that cannot be reissued.
+    machine.fail(f"grep -q NotARealEncryptionKey456 {setup_script}")
+    assert "NotARealEncryptionKey456" not in out, (
+        "the encryption key leaked into the journal"
+    )
+
 
     # And it is genuinely read at runtime: the rejection names the account,
     # which it could only have learned from the file.

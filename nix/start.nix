@@ -235,7 +235,8 @@ rec {
   # rather than padded with guesses, so an unexpected prompt reaches EOF and
   # fails the run instead of silently accepting a wrong answer, and the
   # result is checked afterwards rather than assumed.
-  mkSetup = { stateExpr, launcher, launcherBin, username ? null, usernameFile ? null, passwordFile }:
+  mkSetup = { stateExpr, launcher, launcherBin, username ? null, usernameFile ? null
+            , passwordFile, encryptionKeyFile ? null }:
     writeShellApplication {
       name = "idrive-setup";
       runtimeInputs = [ coreutils ];
@@ -281,13 +282,54 @@ rec {
           username=${lib.escapeShellArg username}
         ''}
 
+        # Once the account authenticates, the client asks how backups are
+        # encrypted:
+        #
+        #   my @options = ('default_encryption_key','private_encryption_key');
+        #   $configType = getUserMenuChoice(scalar(@options));
+        #   if ($configType == 2) {
+        #     $encKey        = getAndValidate(['set_your_encryption_key' ...
+        #     $confirmEncKey = getAndValidate(['confirm_your_encryption_key' ...
+        #
+        # So every account needs an answer here, not only private-key ones:
+        # 1 accepts IDrive's own key, 2 takes a key of your own and then asks
+        # for it twice, and the client rejects the pair if they differ.
+        ${lib.optionalString (encryptionKeyFile != null) ''
+          if [ ! -r ${encryptionKeyFile} ]; then
+            echo "idrive-setup: cannot read the encryption key file ${encryptionKeyFile}" >&2
+            exit 1
+          fi
+          enckey=$(cat ${encryptionKeyFile})
+          enckey=''${enckey%%[[:space:]]}
+          if [ -z "$enckey" ]; then
+            echo "idrive-setup: ${encryptionKeyFile} is empty" >&2
+            exit 1
+          fi
+          case "$enckey" in
+            *[[:space:]]*)
+              # The client refuses these itself ("Encryption key cannot
+              # contain blank space"), well after the password has been
+              # sent. Catching it here fails before anything is transmitted.
+              echo "idrive-setup: the encryption key contains whitespace," \
+                "which IDrive does not accept" >&2
+              exit 1
+              ;;
+          esac
+          encanswers=$(printf '2\n%s\n%s\n' "$enckey" "$enckey")
+        ''}${lib.optionalString (encryptionKeyFile == null) ''
+          encanswers=$(printf '1\n')
+        ''}
+
         # 1 selects "Login using IDrive credentials"; the alternative is SSO,
         # which this cannot drive because it continues in a browser.
-        out=$(printf '1\n%s\n%s\n' "$username" "$password" \
+        out=$(printf '1\n%s\n%s\n%s\n' "$username" "$password" "$encanswers" \
           | timeout 300 "${launcher}/bin/${launcherBin}" --account-setting --auto-setup 2>&1 || true)
 
-        # Never let the secret reach a log, whatever the client printed.
+        # Never let a secret reach a log, whatever the client printed.
         out=''${out//"$password"/[redacted]}
+        ${lib.optionalString (encryptionKeyFile != null) ''
+          out=''${out//"$enckey"/[redacted]}
+        ''}
 
         if printf '%s' "$out" | grep -q '_helpers__servicepath'; then
           echo "idrive-setup: the vendored Python helper could not resolve its" >&2
