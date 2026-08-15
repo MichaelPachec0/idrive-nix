@@ -11,12 +11,18 @@ pkgs.testers.runNixOSTest {
     # of the test is the plumbing around the file, not the file's origin.
     systemd.tmpfiles.rules = [
       "f /run/idrive-password 0400 root root - NotARealPassword123"
+      "f /run/idrive-username 0400 root root - nobody@invalid.example"
     ];
 
+    # usernameFile rather than username, so the account name is read at
+    # setup time instead of baked into a store path. The store is world
+    # readable, so a plain string there is visible to every user on the
+    # machine; this asserts the file path works, since it is the one the
+    # README recommends for a secret manager.
     services.idrive = {
       enable = true;
       package = idrive-client;
-      username = "nobody@invalid.example";
+      usernameFile = "/run/idrive-username";
       passwordFile = "/run/idrive-password";
       timeZone = "Etc/UTC";
     };
@@ -64,5 +70,20 @@ pkgs.testers.runNixOSTest {
     # The password file itself is untouched and still unreadable to others.
     machine.succeed("test -f /run/idrive-password")
     machine.succeed("stat -c %a /run/idrive-password | grep -qx 400")
+
+    # usernameFile keeps the account name out of the world-readable store,
+    # which is the only thing it promises. Assert that promise directly
+    # rather than trusting that reading a file implies it.
+    setup_script = machine.succeed(
+        "systemctl cat idrive-setup.service"
+        " | sed -n 's/^ExecStart=//p' | head -n1"
+    ).strip()
+    machine.fail(f"grep -q nobody@invalid.example {setup_script}")
+
+    # And it is genuinely read at runtime: the rejection names the account,
+    # which it could only have learned from the file.
+    assert "nobody@invalid.example" in out, (
+        f"the username file was not read: {out}"
+    )
   '';
 }
