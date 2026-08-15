@@ -235,7 +235,7 @@ rec {
   # rather than padded with guesses, so an unexpected prompt reaches EOF and
   # fails the run instead of silently accepting a wrong answer, and the
   # result is checked afterwards rather than assumed.
-  mkSetup = { stateExpr, launcher, launcherBin, username, passwordFile }:
+  mkSetup = { stateExpr, launcher, launcherBin, username ? null, usernameFile ? null, passwordFile }:
     writeShellApplication {
       name = "idrive-setup";
       runtimeInputs = [ coreutils ];
@@ -263,9 +263,27 @@ rec {
           exit 1
         fi
 
+        ${lib.optionalString (usernameFile != null) ''
+          # Read at runtime rather than baked into this script, so the
+          # account name never lands in the world-readable Nix store.
+          if [ ! -r ${usernameFile} ]; then
+            echo "idrive-setup: cannot read the username file ${usernameFile}" >&2
+            echo "idrive-setup: it must exist and be readable by this service" >&2
+            exit 1
+          fi
+          username=$(cat ${usernameFile})
+          username=''${username%%[[:space:]]}
+          if [ -z "$username" ]; then
+            echo "idrive-setup: ${usernameFile} is empty" >&2
+            exit 1
+          fi
+        ''}${lib.optionalString (usernameFile == null) ''
+          username=${lib.escapeShellArg username}
+        ''}
+
         # 1 selects "Login using IDrive credentials"; the alternative is SSO,
         # which this cannot drive because it continues in a browser.
-        out=$(printf '1\n%s\n%s\n' ${lib.escapeShellArg username} "$password" \
+        out=$(printf '1\n%s\n%s\n' "$username" "$password" \
           | timeout 300 "${launcher}/bin/${launcherBin}" --account-setting --auto-setup 2>&1 || true)
 
         # Never let the secret reach a log, whatever the client printed.
@@ -280,8 +298,7 @@ rec {
         fi
 
         if printf '%s' "$out" | grep -qiE 'failed to authenticate|invalid username or password'; then
-          echo "idrive-setup: IDrive rejected the credentials for" \
-            ${lib.escapeShellArg username} >&2
+          echo "idrive-setup: IDrive rejected the credentials for $username" >&2
           printf '%s\n' "$out" >&2
           exit 1
         fi
