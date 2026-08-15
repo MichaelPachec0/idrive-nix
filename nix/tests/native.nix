@@ -90,6 +90,30 @@ pkgs.testers.runNixOSTest {
     # the store or to its own cwd.
     machine.succeed("test -f /var/lib/idrive/user_profile/root/.trace/traceLog.txt")
 
+    # The vendored Python helper has to resolve the service path from its
+    # own location, so it only works if Idrivelib is mirrored into the
+    # application directory rather than symlinked into the store (see
+    # nix/start.nix). When it cannot, every authentication fails with
+    # "'helpers' object has no attribute '_helpers__servicepath'" and no
+    # account can ever be linked.
+    #
+    # Driving setup with a username that cannot exist reaches the helper
+    # without any credentials, which is what makes this assertable in CI:
+    # the run is expected to fail, and what matters is which failure. A
+    # server-side rejection means the helper resolved itself and did its
+    # job; the servicepath error means it never got that far.
+    auth = machine.succeed(
+        "printf '1\\nnobody@invalid.example\\n'"
+        " | timeout 300 idrive --account-setting --auto-setup 2>&1; true"
+    )
+    assert "_helpers__servicepath" not in auth, (
+        f"the vendored Python helper could not resolve its service path,"
+        f" so no login can succeed: {auth}"
+    )
+    assert "Failed to authenticate" in auth, (
+        f"setup did not reach authentication at all: {auth}"
+    )
+
     # Self-update must refuse, not partially apply. This is the end-to-end
     # proof of the whole design: the wrapped binary from
     # environment.systemPackages, invoked exactly as an operator would.
