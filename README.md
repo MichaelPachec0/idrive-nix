@@ -236,6 +236,32 @@ sops.secrets.idrive-password = {
 services.idrive.passwordFile = config.sops.secrets.idrive-password.path;
 ```
 
+The account name can come from a secret too. `username` is a plain string,
+which means it is baked into the setup script in the Nix store where every
+user on the machine can read it; `usernameFile` is read at setup time
+instead:
+
+```nix
+sops.secrets.idrive-username = {
+  owner = config.services.idrive.user;
+  mode = "0400";
+};
+
+services.idrive = {
+  usernameFile = config.sops.secrets.idrive-username.path;
+  passwordFile = config.sops.secrets.idrive-password.path;
+};
+```
+
+Set one of `username` or `usernameFile`, not both.
+
+Be clear about what that buys: it keeps the account name out of the store,
+not out of the journal. The client prints the name in its own messages
+(`Failed to authenticate user "..."`), so a failed setup still shows it.
+Treat it as an identifier worth not publishing rather than as a secret in
+the sense the password is. The password itself is redacted from anything
+this module logs, and never reaches the process table or the environment.
+
 The password is read from that file and handed to the client on standard
 input, so it never appears in the process table, in the unit's environment,
 or in the journal.
