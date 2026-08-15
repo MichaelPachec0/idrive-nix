@@ -122,10 +122,48 @@ rec {
 
         for f in "$appsrc"/*; do
           case "$(basename "$f")" in
-            idrive | .serviceLocation) continue ;;
+            idrive | .serviceLocation | Idrivelib) continue ;;
           esac
           ln -sfn "$f" "$app/$(basename "$f")"
         done
+
+        # Idrivelib gets mirrored rather than symlinked wholesale, because
+        # the vendored Python helper resolves the service path from its own
+        # location the same way the Perl side resolves appPath from $0. With
+        # Idrivelib a symlink into the store, that resolution lands in the
+        # read-only store, the helper never finds the request file the client
+        # just wrote, and every authentication fails with "'helpers' object
+        # has no attribute '_helpers__servicepath'". Copying only
+        # dependencies/python is enough to fix it (19M rather than the whole
+        # 38M tree), and was verified by watching that error turn into a
+        # real server response once the helper could resolve itself.
+        # A state directory prepared by an older build has Idrivelib as a
+        # symlink, and the prune loop above deliberately keeps symlinks that
+        # point at the current package, so this one has to go explicitly.
+        # Without it mkdir -p would follow the link and the writes below
+        # would land in the read-only store.
+        [ -L "$app/Idrivelib" ] && rm -f "$app/Idrivelib"
+        mkdir -p "$app/Idrivelib/dependencies"
+        for f in "$appsrc"/Idrivelib/*; do
+          case "$(basename "$f")" in
+            dependencies) continue ;;
+          esac
+          ln -sfn "$f" "$app/Idrivelib/$(basename "$f")"
+        done
+        for f in "$appsrc"/Idrivelib/dependencies/*; do
+          case "$(basename "$f")" in
+            python) continue ;;
+          esac
+          ln -sfn "$f" "$app/Idrivelib/dependencies/$(basename "$f")"
+        done
+
+        if [ ! -e "$app/Idrivelib/dependencies/python/.idrive-package" ] \
+          || [ "$(cat "$app/Idrivelib/dependencies/python/.idrive-package")" != "${idrive-client}" ]; then
+          rm -rf "$app/Idrivelib/dependencies/python"
+          cp -a "$appsrc/Idrivelib/dependencies/python" "$app/Idrivelib/dependencies/python"
+          chmod -R u+w "$app/Idrivelib/dependencies/python"
+          printf '%s\n' "${idrive-client}" > "$app/Idrivelib/dependencies/python/.idrive-package"
+        fi
 
         shopt -u dotglob nullglob
 
