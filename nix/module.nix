@@ -27,6 +27,15 @@ let
     inherit (cfg) timeZone;
   };
 
+  automaticSetup = cfg.username != null && cfg.passwordFile != null;
+
+  setup = startLib.mkSetup {
+    stateExpr = ''"${cfg.stateDir}"'';
+    launcher = namedLauncher;
+    launcherBin = "idrive";
+    inherit (cfg) username passwordFile;
+  };
+
   # deviceName has to reach the interactive command as well as the unit, not
   # just the unit: the name is fixed when the client first registers the
   # machine, and that registration happens during interactive account setup.
@@ -227,6 +236,47 @@ in
       description = "Paths made available to the client for backup.";
     };
 
+    username = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "someone@example.com";
+      description = ''
+        IDrive account to link this machine to. Set together with
+        passwordFile to have the module perform first-run account setup
+        instead of an operator running it by hand.
+
+        Null (the default) leaves setup interactive, which is what the
+        client is designed for.
+      '';
+    };
+
+    passwordFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = "/run/secrets/idrive-password";
+      description = ''
+        File holding the password for username, read at setup time and
+        never copied anywhere. Point this at a secret your secret manager
+        decrypts at activation (sops-nix, agenix, or a systemd credential),
+        not at a file in the Nix store: everything in the store is
+        world-readable.
+
+        The file should be mode 0400 and owned by services.idrive.user. Its
+        contents are the password and nothing else; trailing whitespace is
+        stripped, an empty file is an error.
+
+        The password reaches the client on standard input, so it never
+        appears in the process table or in the unit's environment.
+
+        This automates the setup the client otherwise prompts for. The
+        client has no non-interactive login of its own, so the module
+        answers its prompts in order, and that order is a property of the
+        client rather than a documented interface. Setup runs once, checks
+        that it worked, and fails loudly rather than leaving a
+        half-configured profile behind.
+      '';
+    };
+
     deviceName = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -425,6 +475,26 @@ in
           '';
         }
         {
+          assertion = (cfg.username == null) == (cfg.passwordFile == null);
+          message = ''
+            services.idrive.username and services.idrive.passwordFile go
+            together: either set both, to have this module perform account
+            setup, or neither, to do it interactively. Setting one alone
+            would leave setup half specified and still waiting for a person.
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.backend == "container"
+            && (cfg.username != null || cfg.passwordFile != null));
+          message = ''
+            services.idrive.username and passwordFile drive the native
+            backend's setup unit, which the container backend does not have:
+            its client runs inside the image with its own entry point. Run
+            account setup against the container as the README describes, or
+            switch backend to "native".
+          '';
+        }
+        {
           assertion = !(cfg.enable && cfg.backend == "container" && cfg.writablePaths != [ ]);
           message = ''
             services.idrive.writablePaths has no effect under backend =
@@ -512,6 +582,41 @@ in
 
     users.groups = lib.mkIf (cfg.createUser && cfg.user != "root" && cfg.group != "root") {
       ${cfg.group} = { };
+    };
+
+    # First-run setup, when credentials were supplied. Ordered before the
+    # service and required by it, so the daemon never starts against a
+    # profile that setup failed to create: a half-configured client that
+    # exits cleanly would otherwise look exactly like a correctly
+    # configured one with nothing to do.
+    systemd.services.idrive-setup = mkIf automaticSetup {
+      description = "IDrive first-run account setup";
+      before = [ "idrive.service" ];
+      requiredBy = [ "idrive.service" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+
+      # It runs once and leaves a stamp; the client itself is the other
+      # guard, refusing to reconfigure an account that is already linked.
+      unitConfig.ConditionPathExists = "!${cfg.stateDir}/.setup-done";
+
+      environment = {
+        TZ = cfg.timeZone;
+        LC_ALL = "en_US.UTF-8";
+      } // lib.optionalAttrs (cfg.deviceName != null) {
+        IDRIVE_DEVICE_NAME = cfg.deviceName;
+      };
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = cfg.user;
+        Group = cfg.group;
+        ExecStartPre = "${prepare}/bin/idrive-prepare";
+        ExecStart = "${setup}/bin/idrive-setup";
+      } // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
+        SupplementaryGroups = cfg.supplementaryGroups;
+      };
     };
 
     systemd.services.idrive = {

@@ -1,4 +1,4 @@
-{ writeShellApplication, coreutils, tzdata, idrive-client }:
+{ lib, writeShellApplication, coreutils, tzdata, idrive-client }:
 
 let
   # Name of the writable application directory mkPrepare builds inside
@@ -217,6 +217,87 @@ rec {
           exec "$app/idrivecron" "$@"
         fi
         exec "$app/idrive" "$@"
+      '';
+    };
+
+  # First-run account setup, driven from a secret instead of a person.
+  #
+  # The client has no non-interactive login: --login opens a menu, and
+  # --account-setting --auto-setup only skips the redraws, still reading
+  # every answer from standard input (getUserChoice is "$input = <STDIN>").
+  # So the answers are fed in order. The order was established by running
+  # setup and watching it: authentication method, then username. The
+  # password prompt follows, but only once the username validates against
+  # the server, so it cannot be observed without a real account.
+  #
+  # That is the honest limit of this: the leading answers are verified, the
+  # tail is not. Standard input is therefore closed after the three answers
+  # rather than padded with guesses, so an unexpected prompt reaches EOF and
+  # fails the run instead of silently accepting a wrong answer, and the
+  # result is checked afterwards rather than assumed.
+  mkSetup = { stateExpr, launcher, launcherBin, username, passwordFile }:
+    writeShellApplication {
+      name = "idrive-setup";
+      runtimeInputs = [ coreutils ];
+      text = ''
+        set -euo pipefail
+
+        state=${stateExpr}
+        stamp="$state/.setup-done"
+
+        if [ -e "$stamp" ]; then
+          echo "idrive-setup: already configured, nothing to do" >&2
+          exit 0
+        fi
+
+        if [ ! -r ${passwordFile} ]; then
+          echo "idrive-setup: cannot read the password file ${passwordFile}" >&2
+          echo "idrive-setup: it must exist and be readable by this service" >&2
+          exit 1
+        fi
+
+        password=$(cat ${passwordFile})
+        password=''${password%%[[:space:]]}
+        if [ -z "$password" ]; then
+          echo "idrive-setup: ${passwordFile} is empty" >&2
+          exit 1
+        fi
+
+        # 1 selects "Login using IDrive credentials"; the alternative is SSO,
+        # which this cannot drive because it continues in a browser.
+        out=$(printf '1\n%s\n%s\n' ${lib.escapeShellArg username} "$password" \
+          | timeout 300 "${launcher}/bin/${launcherBin}" --account-setting --auto-setup 2>&1 || true)
+
+        # Never let the secret reach a log, whatever the client printed.
+        out=''${out//"$password"/[redacted]}
+
+        if printf '%s' "$out" | grep -q '_helpers__servicepath'; then
+          echo "idrive-setup: the vendored Python helper could not resolve its" >&2
+          echo "service path, so no login can succeed. This is a packaging" >&2
+          echo "fault, not a credential problem." >&2
+          printf '%s\n' "$out" >&2
+          exit 1
+        fi
+
+        if printf '%s' "$out" | grep -qiE 'failed to authenticate|invalid username or password'; then
+          echo "idrive-setup: IDrive rejected the credentials for" \
+            ${lib.escapeShellArg username} >&2
+          printf '%s\n' "$out" >&2
+          exit 1
+        fi
+
+        # Only the client writes under user_profile, so its absence means
+        # setup did not get far enough to register anything, whatever the
+        # output looked like.
+        if [ ! -d "$state/user_profile" ] || [ -z "$(ls -A "$state/user_profile" 2>/dev/null)" ]; then
+          echo "idrive-setup: setup finished without creating a profile." >&2
+          echo "The prompt sequence may have changed in this client version." >&2
+          printf '%s\n' "$out" >&2
+          exit 1
+        fi
+
+        printf '%s\n' "${idrive-client.version}" > "$stamp"
+        echo "idrive-setup: account linked" >&2
       '';
     };
 
