@@ -206,6 +206,75 @@ Per-user first-run setup is the ordinary one, run as yourself:
 idrive-user --account-setting
 ```
 
+## Automatic account setup from a secret
+
+By default, linking a machine to an IDrive account is interactive: you run
+`idrive --account-setting` once and answer its prompts. Supplying both
+`username` and `passwordFile` has the module do it instead, on first start:
+
+```nix
+services.idrive = {
+  enable = true;
+  username = "someone@example.com";
+  passwordFile = "/run/secrets/idrive-password";
+};
+```
+
+The two options go together; setting one alone fails evaluation, because a
+half specified setup would still sit waiting for a person.
+
+`passwordFile` should come from a secret manager that decrypts at
+activation, such as sops-nix or agenix, or from a systemd credential. Do
+not point it into the Nix store, which is world readable. With sops-nix:
+
+```nix
+sops.secrets.idrive-password = {
+  owner = config.services.idrive.user;
+  mode = "0400";
+};
+
+services.idrive.passwordFile = config.sops.secrets.idrive-password.path;
+```
+
+The password is read from that file and handed to the client on standard
+input, so it never appears in the process table, in the unit's environment,
+or in the journal.
+
+### What this actually does, and where it is fragile
+
+The client has no non-interactive login. `--login` opens a menu, and
+`--account-setting --auto-setup` only skips the redraws while still reading
+every answer from standard input. So the module answers the prompts in
+order.
+
+That order is a property of the client, not a documented interface. The
+leading answers are verified against the shipped binary; the password
+prompt only appears once IDrive accepts the username, so it cannot be
+exercised without a real account, and neither can CI. A future client
+version that reorders its prompts would break setup.
+
+The failure is built to be loud rather than quiet:
+
+- Standard input is closed after the answers rather than padded with
+  guesses, so an unexpected prompt hits end of file instead of being fed
+  something wrong.
+- Setup verifies afterwards that a profile was actually created, rather
+  than trusting that the client printed something reassuring.
+- A failed setup writes no completion stamp, so the next start retries
+  instead of skipping forever.
+- `idrive.service` requires the setup unit, so the daemon does not start
+  against a profile that was never created. This matters because the
+  client exits cleanly when no account is linked, which otherwise looks
+  exactly like a healthy idle service.
+
+If setup fails, `systemctl status idrive-setup` and its journal say which
+of those happened. Rerunning is safe: it is skipped once the account is
+linked, and the client refuses to reconfigure an account that already
+exists.
+
+Account setup for the container backend is not covered by this; run it
+against the container as described above.
+
 ## Naming the device in the iDrive web interface
 
 What iDrive shows as the device name is what it calls the backup location,
