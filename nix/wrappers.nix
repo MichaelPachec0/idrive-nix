@@ -30,7 +30,7 @@ let
   # because the client also runs `uname -m` to pick its transfer binaries and
   # `uname -r` to check the kernel: answering those with a device name would
   # break architecture detection.
-  deviceNameShims = runCommand "idrive-device-name-shims" { } ''
+  clientShims = runCommand "idrive-client-shims" { } ''
     mkdir -p "$out/libexec/idrive-shims"
 
     cat > "$out/libexec/idrive-shims/uname" <<EOF
@@ -52,11 +52,47 @@ let
     exec ${unixtools.hostname}/bin/hostname "\$@"
     EOF
 
-    chmod +x "$out/libexec/idrive-shims/uname" "$out/libexec/idrive-shims/hostname"
+    # The client identifies its operating system by reading
+    # /etc/os-release, and gets it wrong here in a way that makes login
+    # impossible. getOSBuild() does:
+    #
+    #   my $osres = `cat /etc/os-release 2>/dev/null`;
+    #   Chomp(\$osres);                       # strips the final newline
+    #   $build = $1 if ($osres =~ /VERSION_ID="(.*?)"\n/s);
+    #
+    # The pattern needs a newline AFTER the closing quote. NixOS writes
+    # VERSION_ID last, so the only newline that could match is the one
+    # Chomp just removed: $build stays 0, the early return is skipped, and
+    # the chain falls through to a branch that does "$os = `uname -n`" and
+    # sends the HOSTNAME as the operating system with build 0. IDrive
+    # answers Invalid_arguments and no account can be linked.
+    #
+    # An extra newline does not help: the client's own Chomp is
+    #
+    #   sub Chomp { chomp(REF); REF =~ s/^[\s\t]+|[\s\t]+.../g; }
+    #
+    # which strips ALL trailing whitespace, so any padding newline goes with
+    # it. What works is making VERSION_ID stop being the final line, so the
+    # newline the pattern needs sits between two lines of content. A comment
+    # does that and is valid os-release syntax, so nothing else reading the
+    # file is affected. Every other argument is delegated untouched.
+    cat > "$out/libexec/idrive-shims/cat" <<EOF
+    #!${bash}/bin/bash
+    if [ "\$#" -eq 1 ] && [ "\$1" = /etc/os-release ]; then
+      ${coreutils}/bin/cat /etc/os-release || exit
+      printf '# padding: the client needs VERSION_ID to not be the last line\n'
+      exit 0
+    fi
+    exec ${coreutils}/bin/cat "\$@"
+    EOF
+
+    chmod +x "$out/libexec/idrive-shims/uname" \
+             "$out/libexec/idrive-shims/hostname" \
+             "$out/libexec/idrive-shims/cat"
   '';
 in
 {
-  inherit deviceNameShims;
+  inherit clientShims;
 
   mkWrappers = { root, vendorLib }: ''
     # The update logic is compiled into the static bin/idrive binary and is
@@ -136,7 +172,7 @@ if [ "\$first" = "--utilities" ]; then
 fi
 
 export LD_LIBRARY_PATH="${vendorLib}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-export PATH="${deviceNameShims}/libexec/idrive-shims:${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
+export PATH="${clientShims}/libexec/idrive-shims:${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
 # Make \$0 absolute without resolving through any symlink: loadAppPath runs
