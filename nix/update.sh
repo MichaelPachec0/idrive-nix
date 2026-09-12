@@ -10,7 +10,18 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 }
 SOURCES="$repo_root/nix/sources.json"
 
-version_js="$(curl -fsSL "$VERSION_URL")"
+# Fetch with retries, timeouts and a browser User-Agent. From GitHub-hosted
+# (Azure) runner IPs this host is unreliable: it both times out (curl exit
+# 28) and, worse, answers the default curl User-Agent with a 200 bot-challenge
+# page that carries none of the expected variables. A realistic UA plus
+# --retry/--retry-all-errors covers both failure modes; the local dev path is
+# unaffected because it already succeeded without them.
+UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+version_js="$(curl -fsSL \
+  --retry 5 --retry-all-errors --retry-delay 3 \
+  --connect-timeout 15 --max-time 60 \
+  -A "$UA" \
+  "$VERSION_URL")"
 version="$(echo "$version_js" \
   | sed -n 's/^var linuxScriptVersion = "Version \([0-9.]*\)".*/\1/p')"
 url="$(echo "$version_js" \
@@ -18,6 +29,10 @@ url="$(echo "$version_js" \
 
 if [ -z "$version" ] || [ -z "$url" ]; then
   echo "Error: iDrive version or download URL not found" >&2
+  # Dump what upstream actually returned so a future block/challenge page is
+  # diagnosable from the CI log instead of just this bare message.
+  echo "--- fetched ${#version_js} bytes from $VERSION_URL, first 500: ---" >&2
+  echo "${version_js:0:500}" >&2
   exit 1
 fi
 
