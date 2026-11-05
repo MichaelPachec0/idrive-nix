@@ -259,7 +259,13 @@ in
       type = types.listOf types.path;
       default = [ ];
       example = [ "/srv/data" "/home/alice/documents" ];
-      description = "Paths made available to the client for backup.";
+      description = ''
+        Paths the service may read. This does NOT choose what gets backed up:
+        the client keeps its backup set in its own state, set with
+        `idrive --edit-job-sets backup`. On the native backend this gives
+        mount ordering and legacySourceLinks; on the container backend it
+        mounts each path at /source/N.
+      '';
     };
 
     username = mkOption {
