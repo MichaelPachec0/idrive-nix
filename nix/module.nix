@@ -752,7 +752,11 @@ in
 
       serviceConfig = {
         Type = "simple";
-        Restart = "on-failure";
+        # The scheduler exits 0 whenever the clock jumps by more than 70
+        # seconds, as after a suspend, expecting a distro service template to
+        # bring it back. NixOS has none, so on-failure would leave it dead. As
+        # any user but root it exits at once, so always would only loop.
+        Restart = if cfg.user == "root" then "always" else "on-failure";
         RestartSec = 10;
         User = cfg.user;
         Group = cfg.group;

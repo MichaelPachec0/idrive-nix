@@ -44,6 +44,15 @@ pkgs.testers.runNixOSTest {
     machine.sleep(15)
     machine.succeed("systemctl is-active idrive.service")
 
+    # A clock jump, as after a suspend, makes the scheduler exit 0 and expect
+    # a distro service template to restart it. It has to come back anyway.
+    machine.succeed("date -s '+3 hours'")
+    machine.wait_until_succeeds(
+        "[ \"$(systemctl show idrive.service --property=NRestarts --value)\" -ge 1 ]",
+        timeout=120,
+    )
+    machine.wait_until_succeeds("systemctl is-active idrive.service", timeout=60)
+
     # Backups stop at "Unable to find MAC Address" without these, and that
     # needs a linked account to reach, so assert the wrapper's PATH instead.
     machine.succeed("grep -q -- '-which-' /var/lib/idrive/.app/idrive")
