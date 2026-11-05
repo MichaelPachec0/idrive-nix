@@ -75,6 +75,18 @@ pkgs.testers.runNixOSTest {
     # from running rather than leaving it to exit cleanly and look fine.
     machine.fail("systemctl is-active idrive.service")
 
+    # This VM has no network, so setup must have marked itself for retry, and
+    # the retry path must really run it again without a reboot.
+    machine.succeed("test -e /var/lib/idrive/.setup-retry")
+    machine.succeed("systemctl is-active idrive-setup-retry.timer")
+    machine.succeed("systemctl start idrive-setup-retry.service")
+    machine.wait_until_succeeds(
+        "[ \"$(journalctl -u idrive-setup.service | grep -c 'answering: password')\" -ge 2 ]",
+        timeout=120,
+    )
+    machine.wait_until_fails("systemctl is-active idrive-setup.service")
+    machine.fail("test -e /var/lib/idrive/.setup-done")
+
     # The password file itself is untouched and still unreadable to others.
     machine.succeed("test -f /run/idrive-password")
     machine.succeed("stat -c %a /run/idrive-password | grep -qx 400")

@@ -740,9 +740,33 @@ in
       };
     };
 
+    # Setup that failed on the network tries again without a reboot. A timer
+    # rather than Restart=: a restarting oneshot stays activating, which would
+    # hold multi-user.target until the network returned. The driver writes the
+    # marker only for network failures, so a rejected password is never resent
+    # from here.
+    systemd.services.idrive-setup-retry = mkIf automaticSetup {
+      description = "Retry IDrive account setup after a network failure";
+      unitConfig.ConditionPathExists = [
+        "${cfg.stateDir}/.setup-retry"
+        "!${cfg.stateDir}/.setup-done"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.systemd}/bin/systemctl start --no-block idrive.service";
+      };
+    };
+    systemd.timers.idrive-setup-retry = mkIf automaticSetup {
+      wantedBy = [ "timers.target" ];
+      timerConfig.OnCalendar = "*:0/5";
+    };
+
     systemd.services.idrive = {
       description = "IDrive Linux backup client";
       wantedBy = [ "multi-user.target" ];
+      # Wants, not Requires: Requires= would fail the unit whenever a disk is
+      # absent, which is the failure the - prefixes below exist to avoid.
+      unitConfig.WantsMountsFor = cfg.backupPaths ++ cfg.writablePaths;
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
@@ -774,9 +798,6 @@ in
         # Not "${launcher}/bin/idrive --cron": the launcher runs the prepare
         # step itself, and under Type=simple systemd considers the service
         # started the moment ExecStart is forked, so preparing from there
-      # Wants, not Requires: Requires= would fail the unit whenever a disk is
-      # absent, which is the failure the - prefixes below exist to avoid.
-      unitConfig.WantsMountsFor = cfg.backupPaths ++ cfg.writablePaths;
         # would let "systemctl start idrive" return while the state
         # directory is still being seeded. Keeping the prepare step in
         # ExecStartPre preserves systemd's own ordering guarantee, and

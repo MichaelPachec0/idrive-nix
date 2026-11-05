@@ -59,6 +59,10 @@ runCommand "idrive-setup-driver" {
       echo 'Failed to authenticate user "someone". Try again.'
       ask 'Enter your IDrive password: ' ;;
     silent-success) login ;;
+    network-down) login
+      echo 'Failed to authenticate user "someone". Failed to establish a new connection. Try again.' ;;
+    bad-credentials) login
+      echo 'Failed to authenticate user "someone". Username or Password not found. Try again.' ;;
     linked-but-failed) login; encmenu; linked; exit 1 ;;
     reconfigure) linked; ask 'Your account is already configured. Do you want to reconfigure it? (y/n)'; exit 1 ;;
     echoes-secret) login; IFS= read -r p < "$PASSWORD_COPY"; echo "debug $p"; exit 1 ;;
@@ -117,6 +121,12 @@ runCommand "idrive-setup-driver" {
   # Exit status and files must both agree before setup counts as done.
   run silent-success 1 '1,someone,hunter2-pass'
   run linked-but-failed 1 '1,someone,hunter2-pass,1'
+  # Only a network failure may be retried: retrying a rejected password is
+  # how an account gets locked.
+  run network-down 1 '1,someone,hunter2-pass'
+  [ -e state/.setup-retry ] || { echo "FAIL network-down: no retry marker"; fails=$((fails + 1)); }
+  run bad-credentials 1 '1,someone,hunter2-pass'
+  [ ! -e state/.setup-retry ] || { echo "FAIL bad-credentials: would retry a bad password"; fails=$((fails + 1)); }
   run helper-broken 1 '1,someone,hunter2-pass'
   grep -q 'packaging fault' out || { echo "FAIL helper-broken: not named"; fails=$((fails + 1)); }
   run hangs 1 '1,someone,hunter2-pass'

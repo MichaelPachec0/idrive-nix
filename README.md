@@ -314,7 +314,10 @@ Setup stops rather than guessing:
   login continues in a browser.
 - Success needs a zero exit status and the files only a completed login
   writes, rather than anything the client printed.
-- A failed setup writes no completion stamp, so the next start retries.
+- A failed setup writes no completion stamp, so the next boot tries again.
+  After a network failure it also retries every five minutes. After anything
+  else, a rejected password included, it waits for the next boot or a manual
+  `systemctl start idrive-setup`.
 - `idrive.service` requires the setup unit, so the daemon does not start
   against a profile that was never created.
 

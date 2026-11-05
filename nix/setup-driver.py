@@ -28,6 +28,17 @@ import time
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
+# Failures worth trying again. Anything else is left alone, because retrying a
+# rejected password is how an account gets locked. The module's retry timer
+# only acts while this file exists.
+RETRY_MARKER = ".setup-retry"
+TRANSIENT = re.compile(
+    r"Failed to establish a new connection|Failed to connect"
+    r"|Name or service not known|Temporary failure|Network is unreachable"
+    r"|timed out|gateway timeout",
+    re.I,
+)
+
 
 class SetupFailed(Exception):
     pass
@@ -245,6 +256,10 @@ def main():
     parser.add_argument("--idle-timeout", type=float, default=120)
     args = parser.parse_args()
 
+    marker = os.path.join(args.state, RETRY_MARKER)
+    if os.path.exists(marker):
+        os.remove(marker)
+
     try:
         username = args.username
         if args.username_file:
@@ -290,6 +305,10 @@ def main():
 
         log("client output:")
         print(transcript, file=sys.stderr, flush=True)
+        if TRANSIENT.search(transcript):
+            with open(marker, "w", encoding="utf-8"):
+                pass
+            log("this looks like a network failure, so setup will retry")
         raise SetupFailed(
             "the client exited with status %s and the account is %s"
             % (status, "linked" if is_linked(args.state, want_key) else "not linked")
