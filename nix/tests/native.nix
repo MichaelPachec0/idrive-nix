@@ -41,6 +41,11 @@ pkgs.testers.runNixOSTest {
     machine.sleep(15)
     machine.succeed("systemctl is-active idrive.service")
 
+    # Backups stop at "Unable to find MAC Address" without these, and that
+    # needs a linked account to reach, so assert the wrapper's PATH instead.
+    machine.succeed("grep -q -- '-which-' /var/lib/idrive/.app/idrive")
+    machine.succeed("grep -q -- '-net-tools-' /var/lib/idrive/.app/idrive")
+
     # The only end-to-end exercise of the module's own ExecStart argv0: if
     # this ever prints the client's symlink-guard refusal (see
     # nix/wrappers.nix), the unit is invoking --cron through a path that

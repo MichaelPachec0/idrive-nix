@@ -16,6 +16,12 @@
 , procps
 , util-linux
 , unixtools
+, curl
+, findutils
+, gnugrep
+, gnused
+, nettools
+, which
 , runCommand
   # No hardcoded literal: update.sh only ever appends new keys to
   # sources.json, it never edits this file, so a literal default here would
@@ -48,7 +54,8 @@
 
 let
   wrappers = import ./wrappers.nix {
-    inherit lib bash coreutils gnutar gzip procps util-linux unixtools runCommand;
+    inherit lib bash coreutils gnutar gzip procps util-linux unixtools runCommand
+      curl findutils gawk gnugrep gnused nettools which;
   };
   sources = lib.importJSON ./sources.json;
   # Forced only when no installer was passed in, so a caller supplying its

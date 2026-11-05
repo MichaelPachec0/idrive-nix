@@ -11,9 +11,20 @@
 # already set earlier in the same build script (both existing callers set
 # root="$out/opt/IDriveForLinux" in their installPhase, and stdenv runs every
 # phase in one shell, so the variable is still in scope in postInstall).
-{ lib, bash, coreutils, gnutar, gzip, procps, util-linux, unixtools, runCommand }:
+{ lib, bash, coreutils, gnutar, gzip, procps, util-linux, unixtools, runCommand
+, curl, findutils, gawk, gnugrep, gnused, nettools, which }:
 
 let
+  # What the client shells out to. On NixOS none of this is reliably on PATH
+  # and there is no /sbin, and the client fails on the absences: without
+  # `which` and `ifconfig` every backup stops at "Unable to find MAC Address",
+  # it locates editors with `which`, and it requires `curl` and `tar`. Its job
+  # status pipelines use grep, sed, awk and find.
+  runtimeTools = [
+    coreutils bash gnutar gzip procps util-linux unixtools.hostname
+    curl findutils gawk gnugrep gnused nettools which
+  ];
+
   # The name iDrive shows for this machine is the "backup location"
   # nickname, and the client derives its default from the system hostname:
   #
@@ -172,7 +183,7 @@ if [ "\$first" = "--utilities" ]; then
 fi
 
 export LD_LIBRARY_PATH="${vendorLib}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-export PATH="${clientShims}/libexec/idrive-shims:${lib.makeBinPath [ coreutils bash gnutar gzip procps util-linux unixtools.hostname ]}\''${PATH:+:\$PATH}"
+export PATH="${clientShims}/libexec/idrive-shims:${lib.makeBinPath runtimeTools}\''${PATH:+:\$PATH}"
 export TERM="\''${TERM:-xterm}"
 
 # Make \$0 absolute without resolving through any symlink: loadAppPath runs
