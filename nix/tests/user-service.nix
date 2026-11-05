@@ -14,6 +14,7 @@ pkgs.testers.runNixOSTest {
     # something to exclude: a test where every user is allowed cannot tell
     # a working ConditionUser from an absent one.
     services.idrive = {
+      acceptTerms = true;
       package = idrive-client;
       userServices = [ "alice" ];
       userDeviceNames.alice = "laptop-alice";

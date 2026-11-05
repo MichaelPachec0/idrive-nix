@@ -82,6 +82,10 @@
           prepare-script-version-gate = pkgs.callPackage ./nix/tests/prepare-script-version-gate.nix {
             inherit idrive-client;
           };
+          terms-gate = pkgs.callPackage ./nix/tests/terms-gate.nix {
+            nixosModule = self.nixosModules.idrive;
+            inherit idrive-client;
+          };
           native = pkgs.callPackage ./nix/tests/native.nix {
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;

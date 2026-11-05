@@ -22,6 +22,7 @@ pkgs.testers.runNixOSTest {
 
     services.idrive = {
       enable = true;
+      acceptTerms = true;
       package = idrive-client;
       user = "idrive";
       group = "idrive";

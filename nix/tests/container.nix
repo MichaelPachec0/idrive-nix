@@ -11,6 +11,7 @@ pkgs.testers.runNixOSTest {
 
     services.idrive = {
       enable = true;
+      acceptTerms = true;
       package = idrive-client;
       backend = "container";
       backupPaths = [ "/srv/data" ];

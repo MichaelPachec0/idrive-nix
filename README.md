@@ -31,6 +31,7 @@ The client is proprietary software, so any consumer of this flake must set
           nixpkgs.config.allowUnfree = true;
           services.idrive = {
             enable = true;
+            acceptTerms = true;
             backupPaths = [ "/srv/data" ];
           };
         }
@@ -42,6 +43,15 @@ The client is proprietary software, so any consumer of this flake must set
 
 This runs the client natively under systemd (`services.idrive.backend`
 defaults to `"native"`). See "Container backend" below for the alternative.
+
+### Accepting the terms
+
+`services.idrive.acceptTerms` defaults to `false`. Until you have read
+[IDrive's terms and conditions](https://www.idrive.com/terms-and-conditions)
+and set it to `true`, the module does no work on either backend or for
+`userServices`: it creates no services, launchers, containers or users, and
+evaluation prints a warning saying so. The other examples in this README
+leave the option out for brevity, but it is needed in all of them.
 
 The package alone is also available directly as `idrive.packages.<system>.idrive-client`,
 without the module, if you just want the `idrive` binary on `PATH`.

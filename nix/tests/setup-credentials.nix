@@ -22,6 +22,7 @@ pkgs.testers.runNixOSTest {
     # README recommends for a secret manager.
     services.idrive = {
       enable = true;
+      acceptTerms = true;
       package = idrive-client;
       usernameFile = "/run/idrive-username";
       passwordFile = "/run/idrive-password";

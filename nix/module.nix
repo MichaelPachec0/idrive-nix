@@ -93,6 +93,20 @@ in
   options.services.idrive = {
     enable = mkEnableOption "the IDrive Linux backup client";
 
+    acceptTerms = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Confirms that you have read and accept IDrive's terms and
+        conditions, <https://www.idrive.com/terms-and-conditions>.
+
+        While this is false the module does no work: it creates no
+        services, launchers, containers or users, whatever else is set, and
+        evaluation prints a warning saying so. A warning rather than an
+        error, so that a host stays deployable while the terms are reviewed.
+      '';
+    };
+
     package = mkPackageOption pkgs "idrive-client" {
       extraDescription = ''
         This package is not in nixpkgs; it comes from this flake's own
@@ -602,7 +616,14 @@ in
           '';
         }
       ];
-      warnings = lib.optionals (cfg.enable && cfg.backend == "native" && cfg.readAllFiles && cfg.user == "root") [
+      warnings = lib.optionals ((cfg.enable || cfg.userServices != [ ]) && !cfg.acceptTerms) [
+        ''
+          services.idrive will not do any work: services.idrive.acceptTerms
+          is false, so no IDrive service, launcher or container is created.
+          Read https://www.idrive.com/terms-and-conditions and set
+          services.idrive.acceptTerms = true to accept them.
+        ''
+      ] ++ lib.optionals (cfg.enable && cfg.backend == "native" && cfg.readAllFiles && cfg.user == "root") [
         ''
           services.idrive.readAllFiles is true but services.idrive.user is
           "root": root already bypasses the DAC checks CAP_DAC_READ_SEARCH
@@ -611,7 +632,7 @@ in
         ''
       ];
     }
-    (mkIf (cfg.enable && cfg.backend == "native") {
+    (mkIf (cfg.enable && cfg.acceptTerms && cfg.backend == "native") {
     # hiPrio on the launcher, and both entries rather than just one: the
     # launcher owns bin/idrive (the documented `sudo idrive
     # --account-setting` entry point, which only works when it runs through
@@ -787,7 +808,7 @@ in
       };
     };
     })
-    (mkIf (cfg.enable && cfg.backend == "container") {
+    (mkIf (cfg.enable && cfg.acceptTerms && cfg.backend == "container") {
       virtualisation.oci-containers = {
         backend = cfg.container.runtime;
         containers.idrive = {
@@ -818,7 +839,7 @@ in
     # backend: this is a different shape of deployment (one account per
     # person) rather than a variant of the system-wide one, and a machine
     # can legitimately run both.
-    (mkIf (cfg.userServices != [ ]) {
+    (mkIf (cfg.acceptTerms && cfg.userServices != [ ]) {
       environment.systemPackages = [ namedUserLauncher ];
 
       # Without lingering, a user's systemd manager exits when their last
