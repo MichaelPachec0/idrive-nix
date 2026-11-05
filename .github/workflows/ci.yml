@@ -1,0 +1,62 @@
+name: CI
+
+# Nothing here pushes to a registry, on purpose. The image carries IDrive's
+# proprietary client and this flake is for personal use: each machine builds
+# it locally from IDrive's own download.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "nix/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "nix/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # nix flake check builds six NixOS VM tests. GitHub's standard hosted Linux runners do
+    # not officially support nested virtualization: /dev/kvm is undocumented
+    # and inconsistent there. The pinned nixpkgs' own qemu-common.nix passes
+    # "-machine accel=kvm:tcg" (virtualisation.qemu.forceAccel is not set by
+    # any test here), so QEMU itself falls back to slower, unaccelerated
+    # software emulation instead of hard-failing when /dev/kvm is missing or
+    # inaccessible. The realistic risk is a slow run eating the job's time
+    # budget, not a broken one, so this bounds that instead of relying on
+    # the 360-minute default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+      - run: nix flake check -L --keep-going
+
+  build:
+    name: Build image (${{ matrix.system }})
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+      - name: Build image
+        run: nix build -L .#packages.${{ matrix.system }}.idrive-image

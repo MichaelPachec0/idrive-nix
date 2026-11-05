@@ -545,7 +545,7 @@ existing install.
 ## Versions
 
 `idrive-client` (the default, `idrive.packages.<system>.idrive-client`) is
-version 3.14.0.
+the newest version pinned in `nix/sources.json`.
 
 Version 3.8.0 is also available as `idrive.packages.<system>.idrive-client_3_8_0`,
 but only for `x86_64-linux`. The vendor no longer distributes a 3.8.0
@@ -560,8 +560,8 @@ so this package does not claim `aarch64-linux`.
 
 ## aarch64 support is built but not hardware-verified
 
-This flake builds `idrive-client` (3.14.0) for `aarch64-linux`, and CI
-builds the package and the OCI image on a native ARM runner on every push.
+This flake builds `idrive-client` for `aarch64-linux`, and CI builds the OCI
+image on a native ARM runner for pull requests and pushes to `main`.
 The checks are a different matter: `nix flake check` only evaluates the
 checks for the system it runs on ("omitted these incompatible systems:
 aarch64-linux" on any other), and CI runs it on `x86_64-linux` only, so no
@@ -594,20 +594,16 @@ grew to 200 GB in upstream issue #26's runaway-disk reports. Keep an eye on
 disk usage under `services.idrive.stateDir` (or the container's mapped
 volume); this module cannot cap or redirect that growth for you.
 
-## Publishing to Docker Hub (fork operators only)
+## No published image
 
-CI publishes the OCI image to both GHCR and Docker Hub. GHCR needs no extra
-setup: it authenticates with the repository's own `GITHUB_TOKEN`. Docker Hub
-publishing needs a repository **variable** (not a secret) named
-`DOCKERHUB_USERNAME`, plus the usual Docker Hub access token secret, set on
-your fork. It is a variable rather than a secret deliberately, since it is
-not sensitive and this keeps it unmasked in workflow logs for easier
-debugging. If you fork this repository and do not set that variable, GHCR
-publishing still works; Docker Hub publishing will not.
+This flake is for personal use and CI pushes nothing to a registry: the image
+contains IDrive's proprietary client. Each machine builds it locally from
+IDrive's own download, and the container backend loads it through
+`container.imageFile`, so no registry is involved.
 
 ## What CI does not test
 
-The flake's checks, including three NixOS VM tests, cover packaging,
+The flake's checks, including six NixOS VM tests, cover packaging,
 wrapping, the prepare script, the native service, the container backend,
 and the image build. They do not and cannot cover real backup or restore
 against iDrive's own servers, since that requires a live iDrive account and

@@ -114,7 +114,7 @@ pkgs.testers.runNixOSTest {
     # end to end would need an iDrive account, which CI does not have.
     wrapper = "/home/alice/.local/state/idrive/.app/idrive"
     shim_dir = machine.succeed(
-        f"grep -o '/nix/store/[a-z0-9]*-idrive-device-name-shims/libexec/idrive-shims'"
+        f"grep -o '/nix/store/[^:]*/libexec/idrive-shims'"
         f" {wrapper} | head -1"
     ).strip()
     assert shim_dir, "the wrapper does not put the device-name shims on PATH"
