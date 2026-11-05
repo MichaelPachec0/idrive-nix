@@ -802,7 +802,10 @@ in
       // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
         SupplementaryGroups = cfg.supplementaryGroups;
       }
-      // lib.optionalAttrs cfg.readAllFiles {
+      # Not for root: root can already read everything, and this bounding set
+      # would strip the rest of its capabilities, which restores need to write
+      # into other users' directories and set ownership.
+      // lib.optionalAttrs (cfg.readAllFiles && cfg.user != "root") {
         # CAP_DAC_READ_SEARCH bypasses file read and directory search
         # permission checks without granting any write capability - the
         # narrowest capability that gets a non-root backup agent "read
