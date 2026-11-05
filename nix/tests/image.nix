@@ -34,15 +34,14 @@ pkgs.testers.runNixOSTest {
     # nix/wrappers.nix and nix/tests/package-cron-guard.nix cover the
     # mechanism itself at the package level. Capture the real
     # default-entrypoint invocation's output and assert the guard's
-    # refusal message is absent; "; true" keeps machine.succeed from
-    # raising on idrive --cron's own exit code, which is not what this
-    # assertion is about.
-    result = machine.succeed(
-        "timeout 15 podman run --name idrive-cron ${image} 2>&1 || true"
-    )
-    # Still running after 15 seconds is the point: a scheduler that could
-    # not take its lock would have exited by now.
+    # refusal message is absent.
+    machine.succeed("podman run -d --name idrive-cron ${image}")
+    machine.sleep(20)
+    # Still running is the point: a scheduler that could not take its lock
+    # would have exited by now. Detached, because a signal to a foreground
+    # podman run reaches the container and makes this a race.
     machine.succeed("podman inspect -f '{{.State.Running}}' idrive-cron | grep -qx true")
+    result = machine.succeed("podman logs idrive-cron 2>&1")
     machine.succeed("podman rm -f idrive-cron")
     assert "Launch the service using service manager" not in result, (
         f"cron symlink guard fired: {result}"
