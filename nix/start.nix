@@ -61,6 +61,16 @@ rec {
         fi
         printf '%s\n' "${idrive-client.version}" > "$stamp"
 
+        # The client refuses every job with "Version mismatch detected" when
+        # this file differs from its own version, and scheduled jobs then
+        # stop without so much as a log entry. Its updater normally rewrites
+        # it, and that updater is blocked here, so a pin bump has to do it.
+        # Only when the file exists: account setup creates it.
+        if [ -f "$state/cache/version" ] \
+          && [ "$(cat "$state/cache/version")" != "${idrive-client.version}" ]; then
+          printf '%s' "${idrive-client.version}" > "$state/cache/version"
+        fi
+
         # The client resolves its own installation directory from $0:
         # "loadAppPath { my $absFile = getAbsPath($0); $appPath =
         # getCatfile(dirname($absFile), ""); }" with getAbsPath being Perl's

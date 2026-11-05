@@ -23,5 +23,15 @@ runCommand "idrive-prepare-script" { } ''
   grep -q USERDATA /tmp/idrive-state/user_profile_marker || {
     echo "second run clobbered user state"; exit 1;
   }
+
+  # A stale recorded version makes the client refuse every job, so prepare
+  # has to fix it, but must not invent one for an account never set up.
+  test ! -e /tmp/idrive-state/cache/version || { echo "invented cache/version"; exit 1; }
+  mkdir -p /tmp/idrive-state/cache
+  printf '0.0.0' > /tmp/idrive-state/cache/version
+  "${prepare}/bin/idrive-prepare"
+  [ "$(cat /tmp/idrive-state/cache/version)" = "${idrive-client.version}" ] || {
+    echo "stale cache/version was left in place"; exit 1;
+  }
   echo ok > $out
 ''
