@@ -109,13 +109,14 @@ def plan(username, password, key):
     ]
 
 
-def is_linked(state):
+def is_linked(state, want_key=False):
     """True once a completed login's files exist.
 
     Starting the client is enough to create user_profile/<user>/.trace, so a
     non-empty user_profile proves nothing. These are written by the login
     itself: the encoded server credential, the account's configuration, and
-    the cached name of the logged-in user.
+    the cached name of the logged-in user. With a private key there is also
+    the encoded key, which the client removes again if the server rejects it.
     """
     user = pwd.getpwuid(os.getuid()).pw_name
     cached = os.path.join(state, "cache", "idriveuser.txt")
@@ -129,7 +130,9 @@ def is_linked(state):
             and os.path.getsize(credential) > 0
             and os.path.isfile(config)
         ):
-            return True
+            private = os.path.join(profile, ".userInfo", "IDPVT")
+            if not want_key or (os.path.isfile(private) and os.path.getsize(private) > 0):
+                return True
     return False
 
 
@@ -270,9 +273,18 @@ def main():
                 "not a credential problem."
             )
 
+        # The client exits 0 after a rejected key as well, by which point
+        # the login's files already exist.
+        if "Invalid encryption key" in transcript:
+            log("client output:")
+            print(transcript, file=sys.stderr, flush=True)
+            raise SetupFailed("IDrive rejected the encryption key")
+
         # Declining to reconfigure has no documented exit status, so only
-        # the files can decide that case.
-        if (status == 0 or declined) and is_linked(args.state):
+        # the files can decide that case. Nothing is typed in that case
+        # either, so a key cannot be expected to have been stored.
+        want_key = bool(key) and not declined
+        if (status == 0 or declined) and is_linked(args.state, want_key):
             log("account linked")
             return 0
 
@@ -280,7 +292,7 @@ def main():
         print(transcript, file=sys.stderr, flush=True)
         raise SetupFailed(
             "the client exited with status %s and the account is %s"
-            % (status, "linked" if is_linked(args.state) else "not linked")
+            % (status, "linked" if is_linked(args.state, want_key) else "not linked")
         )
     except SetupFailed as failure:
         log(str(failure))

@@ -24,6 +24,10 @@ runCommand "idrive-setup-driver" {
     echo conf > "$STATE/user_profile/$(id -un)/someone/CONFIGURATION_FILE"
     echo someone > "$STATE/cache/idriveuser.txt"
   }
+  keyfile() {
+    mkdir -p "$STATE/user_profile/$(id -un)/someone/.userInfo"
+    echo encoded > "$STATE/user_profile/$(id -un)/someone/.userInfo/IDPVT"
+  }
   login() {
     printf 'Choose a method to authenticate your IDrive account:\n'
     printf '      1) Login using IDrive credentials\n'
@@ -40,8 +44,11 @@ runCommand "idrive-setup-driver" {
   case "$SCENARIO" in
     default) login; encmenu; linked ;;
     private) login; encmenu
-      ask 'Set your encryption key: '; ask 'Confirm your encryption key: '; linked ;;
-    existing-private) login; ask 'Enter your encryption key: '; linked ;;
+      ask 'Set your encryption key: '; ask 'Confirm your encryption key: '; keyfile; linked ;;
+    existing-private) login; ask 'Enter your encryption key: '; keyfile; linked ;;
+    rejected-key) login; ask 'Enter your encryption key: '; linked
+      echo 'Invalid encryption key. Try again.'; exit 0 ;;
+    key-not-used) login; encmenu; linked ;;
     device-menu) login
       printf 'Multiple backup locations are configured with this account. Enter your choice: \n'
       printf '      1) Create new Backup Location\n      2) Select from existing Backup Locations\n'
@@ -92,6 +99,11 @@ runCommand "idrive-setup-driver" {
   run existing-private 0 '1,someone,hunter2-pass,priv-key-123' --encryption-key-file key
   run reconfigure 0 'n'
 
+  # The client exits 0 here with its login files already written.
+  run rejected-key 1 '1,someone,hunter2-pass,priv-key-123' --encryption-key-file key
+  grep -q 'rejected the encryption key' out || { echo "FAIL rejected-key: not named"; fails=$((fails + 1)); }
+  # A key was supplied, so a run that stored none did not do what was asked.
+  run key-not-used 1 '1,someone,hunter2-pass,2' --encryption-key-file key
   # A private-key account with no key supplied has nothing safe to answer.
   run existing-private 1 '1,someone,hunter2-pass'
   # Picking here could create a new device and orphan the old backup set.
