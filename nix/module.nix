@@ -764,6 +764,9 @@ in
         # Not "${launcher}/bin/idrive --cron": the launcher runs the prepare
         # step itself, and under Type=simple systemd considers the service
         # started the moment ExecStart is forked, so preparing from there
+      # Wants, not Requires: Requires= would fail the unit whenever a disk is
+      # absent, which is the failure the - prefixes below exist to avoid.
+      unitConfig.WantsMountsFor = cfg.backupPaths ++ cfg.writablePaths;
         # would let "systemctl start idrive" return while the state
         # directory is still being seeded. Keeping the prepare step in
         # ExecStartPre preserves systemd's own ordering guarantee, and
@@ -781,13 +784,16 @@ in
         # ReadWritePaths takes priority over ProtectSystem and ProtectHome
         # above, so this is what reopens a restore target for writing
         # without relaxing either of them globally.
-        ReadWritePaths = [ cfg.stateDir ] ++ cfg.writablePaths;
+        #
+        # The - makes an absent path harmless. Without it one unplugged disk
+        # fails the whole unit with 226/NAMESPACE and stops every backup.
+        ReadWritePaths = [ cfg.stateDir ] ++ map (p: "-${p}") cfg.writablePaths;
         # ReadOnlyPaths only marks these paths read-only inside the unit's
         # mount namespace; it grants no DAC access by itself. What actually
         # lets a non-root user read files under these paths is
         # SupplementaryGroups, readAllFiles below, or host-managed ACLs -
         # see the README's permission model section.
-        ReadOnlyPaths = cfg.backupPaths;
+        ReadOnlyPaths = map (p: "-${p}") cfg.backupPaths;
       }
       // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
         SupplementaryGroups = cfg.supplementaryGroups;

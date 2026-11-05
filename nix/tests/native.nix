@@ -17,7 +17,10 @@ pkgs.testers.runNixOSTest {
       enable = true;
       acceptTerms = true;
       package = idrive-client;
-      backupPaths = [ "/srv/data" ];
+      # The second entry never exists: an unplugged disk must not stop the
+      # service, which the is-active check below would catch.
+      backupPaths = [ "/srv/data" "/srv/not-plugged-in" ];
+      writablePaths = [ "/srv/also-not-plugged-in" ];
       legacySourceLinks = true;
       timeZone = "Etc/UTC";
     };
