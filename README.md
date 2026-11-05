@@ -91,14 +91,10 @@ Login state and settings are stored under `services.idrive.stateDir`
 For more `idrive` command-line options, see the
 [IDrive documentation](https://www.idrive.com/readme).
 
-### The service sits inactive until an account is linked
+### Restart the service after linking an account
 
-`idrive --cron` (what the systemd unit runs) exits 0 immediately on an
-unconfigured system: this is a precondition check inside the client itself,
-not a fault in the unit. That means a fresh deployment starts the service,
-watches it exit cleanly, and leaves it inactive. `Restart=on-failure` does
-not bring it back, because that clean exit is not a failure. After you
-finish `idrive --account-setting`, run:
+The service runs whether or not an account is linked. Once you finish
+`idrive --account-setting`, restart it so it picks up the new account:
 
 ```
 sudo systemctl restart idrive
@@ -132,11 +128,7 @@ image exactly. `container.runtime` selects `podman` (default) or `docker`;
 
 ### Container first-run login takes two different commands, depending on state
 
-The container backend has the same "inactive until linked" behavior as
-native, with one extra wrinkle: the client's own precondition check makes
-the *default* auto-started container exit and get removed within well under
-a second when no account is linked yet. That changes which login command
-actually works, depending on whether an account already exists:
+Which login command works depends on whether an account already exists:
 
 **If an account is already linked** (for example, after migrating state
 from a previous native or Docker Hub install) and the container is staying
@@ -181,6 +173,12 @@ true`, a system service. It backs up whatever paths you list regardless of
 who owns them, which is what you want for a server or a machine backed up
 as a unit. Reading other users' files is the hard part; see the permission
 model section below.
+
+**Scheduled backups need root.** The client's scheduler exits at once for any
+user but root: its source has `exit(0) if ($AppConfig::mcUser ne 'root')`. So
+with a non-root `services.idrive.user`, or with `userServices`, the unit exits
+cleanly and reports success, and no schedule ever runs. Evaluation warns about
+this. Only the default `user = "root"` runs scheduled backups.
 
 **One account per user.** `services.idrive.userServices = [ "alice" ]`, a
 systemd user service per listed user. Each gets their own iDrive account,
@@ -295,35 +293,39 @@ or in the journal.
 
 ### What this actually does, and where it is fragile
 
-The client has no non-interactive login. `--login` opens a menu, and
-`--account-setting --auto-setup` only skips the redraws while still reading
-every answer from standard input. So the module answers the prompts in
-order.
+The client has no non-interactive login, and piping answers into it cannot
+work: its helper refuses a stdin that is not a terminal. So the module runs
+it on a pseudo-terminal and answers each prompt by its exact text.
 
-That order is a property of the client, not a documented interface. The
-leading answers are verified against the shipped binary; the password
-prompt only appears once IDrive accepts the username, so it cannot be
-exercised without a real account, and neither can CI. A future client
-version that reorders its prompts would break setup.
+Those prompts are a property of the client, not a documented interface. CI
+runs the real client as far as its password prompt. Everything after a
+successful login was read from the client's source and has only run against
+a fake client, because reaching it needs a real account.
 
-The failure is built to be loud rather than quiet:
+Setup stops rather than guessing:
 
-- Standard input is closed after the answers rather than padded with
-  guesses, so an unexpected prompt hits end of file instead of being fed
-  something wrong.
-- Setup verifies afterwards that a profile was actually created, rather
-  than trusting that the client printed something reassuring.
-- A failed setup writes no completion stamp, so the next start retries
-  instead of skipping forever.
+- Any prompt it does not recognise ends the run.
+- Each prompt is answered once, so a run never tries a wrong password twice.
+  A failed setup does try again on the next start, so a bad password is sent
+  once per boot until you fix it.
+- If the account already has backup locations, setup stops instead of
+  choosing, because a wrong choice orphans an existing backup set.
+- Two-factor accounts cannot be automated. SSO accounts neither, because that
+  login continues in a browser.
+- Success needs a zero exit status and the files only a completed login
+  writes, rather than anything the client printed.
+- A failed setup writes no completion stamp, so the next start retries.
 - `idrive.service` requires the setup unit, so the daemon does not start
-  against a profile that was never created. This matters because the
-  client exits cleanly when no account is linked, which otherwise looks
-  exactly like a healthy idle service.
+  against a profile that was never created.
 
-If setup fails, `systemctl status idrive-setup` and its journal say which
-of those happened. Rerunning is safe: it is skipped once the account is
-linked, and the client refuses to reconfigure an account that already
-exists.
+For the cases it stops at, run `sudo idrive --account-setting` once by hand.
+An account that is already linked is left alone.
+
+The secret files are only read until setup succeeds. To change the password
+or the account afterwards, remove `.setup-done` from the state directory and
+restart `idrive-setup`, or relink by hand. A successful login stores an
+encoded, unsalted credential under the state directory, so treat that
+directory as being as sensitive as the secret itself.
 
 Account setup for the container backend is not covered by this; run it
 against the container as described above.

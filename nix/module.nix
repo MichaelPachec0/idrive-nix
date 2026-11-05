@@ -27,6 +27,17 @@ let
     inherit (cfg) timeZone;
   };
 
+  # The client's scheduler locks a path it hardcodes, /var/run/idrivecron.lock,
+  # and exits 0 if it cannot open it, which stops all scheduled backups while
+  # the unit reports success. /run is read-only under ProtectSystem=strict and
+  # root-only anyway, so the path is made a symlink into stateDir, which the
+  # service can already write. A ReadWritePaths entry cannot do this: it fails
+  # the unit with 226/NAMESPACE whenever the path is missing, and the client
+  # can delete it. The + runs this outside the sandbox, on every start.
+  cronLockSetup = pkgs.writeShellScript "idrive-cron-lock" ''
+    ${pkgs.coreutils}/bin/ln -sfn ${lib.escapeShellArg "${cfg.stateDir}/.cron.lock"} /run/idrivecron.lock
+  '';
+
   automaticSetup =
     (cfg.username != null || cfg.usernameFile != null) && cfg.passwordFile != null;
 
@@ -291,25 +302,32 @@ in
       default = null;
       example = "/run/secrets/idrive-password";
       description = ''
-        File holding the password for username, read at setup time and
-        never copied anywhere. Point this at a secret your secret manager
-        decrypts at activation (sops-nix, agenix, or a systemd credential),
-        not at a file in the Nix store: everything in the store is
-        world-readable.
+        File holding the password for username, read at setup time. Point
+        this at a secret your secret manager decrypts at activation
+        (sops-nix or agenix), not at a file in the Nix store: everything in
+        the store is world-readable.
 
         The file should be mode 0400 and owned by services.idrive.user. Its
         contents are the password and nothing else; trailing whitespace is
         stripped, an empty file is an error.
 
-        The password reaches the client on standard input, so it never
-        appears in the process table or in the unit's environment.
+        The module never copies this file, and the password stays out of
+        the process table and the unit's environment. The client does keep
+        credentials of its own: a successful login writes an encoded,
+        unsalted credential under stateDir, so stateDir is as sensitive as
+        this file.
 
-        This automates the setup the client otherwise prompts for. The
-        client has no non-interactive login of its own, so the module
-        answers its prompts in order, and that order is a property of the
-        client rather than a documented interface. Setup runs once, checks
-        that it worked, and fails loudly rather than leaving a
-        half-configured profile behind.
+        The client has no non-interactive login of its own, so the module
+        runs it on a pseudo-terminal and answers its prompts by their exact
+        text, which is a property of the client rather than a documented
+        interface. Setup stops rather than guessing: it fails on any prompt
+        it does not recognise, on two-factor accounts, and when an account
+        already has backup locations to choose between, and it tries a
+        password once per run, so once per boot until it succeeds. In those
+        cases run setup by hand once.
+
+        The file is read only until setup has succeeded. Changing the
+        password afterwards does not reach the client; see the README.
       '';
     };
 
@@ -320,7 +338,7 @@ in
       description = ''
         File holding your IDrive private encryption key, for accounts that
         use one instead of IDrive's own key. Read at setup time, like
-        passwordFile, and never written anywhere.
+        passwordFile. The client keeps its own encoded copy under stateDir.
 
         Null (the default) answers IDrive's setup prompt with the default
         encryption key, which is what an account without a private key
@@ -623,6 +641,14 @@ in
           Read https://www.idrive.com/terms-and-conditions and set
           services.idrive.acceptTerms = true to accept them.
         ''
+      ] ++ lib.optionals (cfg.acceptTerms && (cfg.userServices != [ ]
+        || (cfg.enable && cfg.backend == "native" && cfg.user != "root"))) [
+        ''
+          services.idrive: no scheduled backups will run. The client's
+          scheduler exits at once for any user but root, so a non-root
+          services.idrive.user and every entry in userServices report success
+          and do nothing. Only user = "root" runs a schedule.
+        ''
       ] ++ lib.optionals (cfg.enable && cfg.backend == "native" && cfg.readAllFiles && cfg.user == "root") [
         ''
           services.idrive.readAllFiles is true but services.idrive.user is
@@ -676,9 +702,7 @@ in
 
     # First-run setup, when credentials were supplied. Ordered before the
     # service and required by it, so the daemon never starts against a
-    # profile that setup failed to create: a half-configured client that
-    # exits cleanly would otherwise look exactly like a correctly
-    # configured one with nothing to do.
+    # profile that setup failed to create.
     systemd.services.idrive-setup = mkIf automaticSetup {
       description = "IDrive first-run account setup";
       before = [ "idrive.service" ];
@@ -686,8 +710,9 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
-      # It runs once and leaves a stamp; the client itself is the other
-      # guard, refusing to reconfigure an account that is already linked.
+      # It runs once and leaves a stamp. A profile that was linked some
+      # other way is left alone: the driver declines the client's offer to
+      # reconfigure it.
       unitConfig.ConditionPathExists = "!${cfg.stateDir}/.setup-done";
 
       environment = {
@@ -731,15 +756,11 @@ in
         RestartSec = 10;
         User = cfg.user;
         Group = cfg.group;
-        ExecStartPre = "${prepare}/bin/idrive-prepare";
-        # idrive --cron exits 0 immediately, before doing any sustained
-        # work, until an IDrive account has been linked (a precondition
-        # check inside the client itself, not a fault in this unit). On a
-        # fresh deployment this unit therefore starts, exits cleanly, and
-        # sits inactive; Restart=on-failure will not bring it back up after
-        # the operator finishes account setup, since that exit is not a
-        # failure. A manual `systemctl restart idrive` is required once
-        # setup completes.
+        ExecStartPre = [ "+${cronLockSetup}" "${prepare}/bin/idrive-prepare" ];
+        # The daemon runs with or without a linked account. After setup
+        # finishes it needs a `systemctl restart idrive` to pick the account
+        # up. As any user but root the client's scheduler exits 0 at once,
+        # see the warning above.
         # Not "${launcher}/bin/idrive --cron": the launcher runs the prepare
         # step itself, and under Type=simple systemd considers the service
         # started the moment ExecStart is forked, so preparing from there

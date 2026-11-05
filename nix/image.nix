@@ -108,6 +108,10 @@ dockerTools.buildLayeredImage {
     dockerTools.binSh
   ];
 
+  # The client's scheduler opens /var/run/idrivecron.lock and exits if it
+  # cannot, and nothing else in this image creates that directory.
+  extraCommands = "mkdir -p var/run";
+
   config = {
     Entrypoint = [ "${entrypoint}/bin/idrive-entrypoint" ];
     Env = [

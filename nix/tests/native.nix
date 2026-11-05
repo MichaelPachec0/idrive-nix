@@ -26,23 +26,20 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.wait_for_unit("multi-user.target")
 
-    # idrive --cron exits cleanly, quickly, and on its own the moment it
-    # finds no linked IDrive account: that is a real precondition check
-    # inside the client itself, not a bug here, and not something any
-    # systemd/module setting changes. A backup agent with no account
-    # legitimately has nothing to run. CI has no IDrive credentials and
-    # never will, so this test cannot assert the unit stays "active" the
-    # way a real, account-linked deployment eventually would. Do NOT
-    # restore a wait_for_unit("idrive.service") here: that assertion can
-    # never pass in this environment, and someone re-adding it will just be
-    # reintroducing a permanently red check. Instead assert the part that
-    # is actually true: the unit starts cleanly and stops with
-    # Result=success, not a crash, and is not left in a failed state.
+    # The daemon runs with or without a linked account, so it has to still be
+    # running below. It used to exit within seconds, which looked like a
+    # precondition in the client and was really its lock failing.
     machine.succeed("systemctl start idrive.service")
     machine.wait_until_succeeds(
         "systemctl show idrive.service --property=Result --value | grep -qx success"
     )
     machine.fail("systemctl is-failed idrive.service")
+
+    # The scheduler exits 0 when it cannot open its lock, so Result=success
+    # above cannot see this. On a linked account it stops the daemon dead.
+    machine.fail("journalctl -u idrive.service | grep -qE 'idrivecron.lock|flock\\(\\)'")
+    machine.sleep(15)
+    machine.succeed("systemctl is-active idrive.service")
 
     # The only end-to-end exercise of the module's own ExecStart argv0: if
     # this ever prints the client's symlink-guard refusal (see
@@ -100,9 +97,10 @@ pkgs.testers.runNixOSTest {
     #
     # Driving setup with a username that cannot exist reaches the helper
     # without any credentials, which is what makes this assertable in CI:
-    # the run is expected to fail, and what matters is which failure. A
-    # server-side rejection means the helper resolved itself and did its
-    # job; the servicepath error means it never got that far.
+    # the run is expected to fail, and what matters is which failure. Stdin
+    # is a pipe here, so the helper refuses it locally with Invalid_arguments
+    # and no request is sent. That still means the helper resolved itself;
+    # the servicepath error means it never got that far.
     auth = machine.succeed(
         "printf '1\\nnobody@invalid.example\\n'"
         " | timeout 300 idrive --account-setting --auto-setup 2>&1; true"

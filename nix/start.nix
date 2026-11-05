@@ -1,4 +1,4 @@
-{ lib, writeShellApplication, coreutils, tzdata, idrive-client }:
+{ lib, writeShellApplication, coreutils, python3, tzdata, idrive-client }:
 
 let
   # Name of the writable application directory mkPrepare builds inside
@@ -222,19 +222,15 @@ rec {
 
   # First-run account setup, driven from a secret instead of a person.
   #
-  # The client has no non-interactive login: --login opens a menu, and
-  # --account-setting --auto-setup only skips the redraws, still reading
-  # every answer from standard input (getUserChoice is "$input = <STDIN>").
-  # So the answers are fed in order. The order was established by running
-  # setup and watching it: authentication method, then username. The
-  # password prompt follows, but only once the username validates against
-  # the server, so it cannot be observed without a real account.
+  # The client has no non-interactive login, and piped answers cannot work:
+  # its helper refuses a stdin that is not a terminal. ./setup-driver.py runs
+  # it on a pseudo-terminal instead and answers each prompt by its exact
+  # text, stopping at anything it does not recognise.
   #
-  # That is the honest limit of this: the leading answers are verified, the
-  # tail is not. Standard input is therefore closed after the three answers
-  # rather than padded with guesses, so an unexpected prompt reaches EOF and
-  # fails the run instead of silently accepting a wrong answer, and the
-  # result is checked afterwards rather than assumed.
+  # Verified against the real client up to and including the password
+  # prompt. Everything after a successful login was read from the client's
+  # source and has only run against the fake client in
+  # nix/tests/setup-driver.nix, because reaching it needs a real account.
   mkSetup = { stateExpr, launcher, launcherBin, username ? null, usernameFile ? null
             , passwordFile, encryptionKeyFile ? null }:
     writeShellApplication {
@@ -251,112 +247,17 @@ rec {
           exit 0
         fi
 
-        if [ ! -r ${passwordFile} ]; then
-          echo "idrive-setup: cannot read the password file ${passwordFile}" >&2
-          echo "idrive-setup: it must exist and be readable by this service" >&2
-          exit 1
-        fi
-
-        password=$(cat ${passwordFile})
-        password=''${password%%[[:space:]]}
-        if [ -z "$password" ]; then
-          echo "idrive-setup: ${passwordFile} is empty" >&2
-          exit 1
-        fi
-
-        ${lib.optionalString (usernameFile != null) ''
-          # Read at runtime rather than baked into this script, so the
-          # account name never lands in the world-readable Nix store.
-          if [ ! -r ${usernameFile} ]; then
-            echo "idrive-setup: cannot read the username file ${usernameFile}" >&2
-            echo "idrive-setup: it must exist and be readable by this service" >&2
-            exit 1
-          fi
-          username=$(cat ${usernameFile})
-          username=''${username%%[[:space:]]}
-          if [ -z "$username" ]; then
-            echo "idrive-setup: ${usernameFile} is empty" >&2
-            exit 1
-          fi
-        ''}${lib.optionalString (usernameFile == null) ''
-          username=${lib.escapeShellArg username}
-        ''}
-
-        # Once the account authenticates, the client asks how backups are
-        # encrypted:
-        #
-        #   my @options = ('default_encryption_key','private_encryption_key');
-        #   $configType = getUserMenuChoice(scalar(@options));
-        #   if ($configType == 2) {
-        #     $encKey        = getAndValidate(['set_your_encryption_key' ...
-        #     $confirmEncKey = getAndValidate(['confirm_your_encryption_key' ...
-        #
-        # So every account needs an answer here, not only private-key ones:
-        # 1 accepts IDrive's own key, 2 takes a key of your own and then asks
-        # for it twice, and the client rejects the pair if they differ.
-        ${lib.optionalString (encryptionKeyFile != null) ''
-          if [ ! -r ${encryptionKeyFile} ]; then
-            echo "idrive-setup: cannot read the encryption key file ${encryptionKeyFile}" >&2
-            exit 1
-          fi
-          enckey=$(cat ${encryptionKeyFile})
-          enckey=''${enckey%%[[:space:]]}
-          if [ -z "$enckey" ]; then
-            echo "idrive-setup: ${encryptionKeyFile} is empty" >&2
-            exit 1
-          fi
-          case "$enckey" in
-            *[[:space:]]*)
-              # The client refuses these itself ("Encryption key cannot
-              # contain blank space"), well after the password has been
-              # sent. Catching it here fails before anything is transmitted.
-              echo "idrive-setup: the encryption key contains whitespace," \
-                "which IDrive does not accept" >&2
-              exit 1
-              ;;
-          esac
-          encanswers=$(printf '2\n%s\n%s\n' "$enckey" "$enckey")
-        ''}${lib.optionalString (encryptionKeyFile == null) ''
-          encanswers=$(printf '1\n')
-        ''}
-
-        # 1 selects "Login using IDrive credentials"; the alternative is SSO,
-        # which this cannot drive because it continues in a browser.
-        out=$(printf '1\n%s\n%s\n%s\n' "$username" "$password" "$encanswers" \
-          | timeout 300 "${launcher}/bin/${launcherBin}" --account-setting --auto-setup 2>&1 || true)
-
-        # Never let a secret reach a log, whatever the client printed.
-        out=''${out//"$password"/[redacted]}
-        ${lib.optionalString (encryptionKeyFile != null) ''
-          out=''${out//"$enckey"/[redacted]}
-        ''}
-
-        if printf '%s' "$out" | grep -q '_helpers__servicepath'; then
-          echo "idrive-setup: the vendored Python helper could not resolve its" >&2
-          echo "service path, so no login can succeed. This is a packaging" >&2
-          echo "fault, not a credential problem." >&2
-          printf '%s\n' "$out" >&2
-          exit 1
-        fi
-
-        if printf '%s' "$out" | grep -qiE 'failed to authenticate|invalid username or password'; then
-          echo "idrive-setup: IDrive rejected the credentials for $username" >&2
-          printf '%s\n' "$out" >&2
-          exit 1
-        fi
-
-        # Only the client writes under user_profile, so its absence means
-        # setup did not get far enough to register anything, whatever the
-        # output looked like.
-        if [ ! -d "$state/user_profile" ] || [ -z "$(ls -A "$state/user_profile" 2>/dev/null)" ]; then
-          echo "idrive-setup: setup finished without creating a profile." >&2
-          echo "The prompt sequence may have changed in this client version." >&2
-          printf '%s\n' "$out" >&2
-          exit 1
-        fi
+        ${python3}/bin/python3 ${./setup-driver.py} \
+          --client ${launcher}/bin/${launcherBin} \
+          --state "$state" \
+          ${if usernameFile != null
+            then "--username-file ${lib.escapeShellArg (toString usernameFile)}"
+            else "--username ${lib.escapeShellArg username}"} \
+          --password-file ${lib.escapeShellArg (toString passwordFile)} \
+          ${lib.optionalString (encryptionKeyFile != null)
+            "--encryption-key-file ${lib.escapeShellArg (toString encryptionKeyFile)}"}
 
         printf '%s\n' "${idrive-client.version}" > "$stamp"
-        echo "idrive-setup: account linked" >&2
       '';
     };
 

@@ -53,10 +53,9 @@ pkgs.testers.runNixOSTest {
     # only wires the unit.
     machine.succeed("id -Gn idrive | grep -qw backupdata")
 
-    # Same start/Result assertions as nix/tests/native.nix, and for the same
-    # reason: the client exits 0 the moment it finds no linked account, so
-    # asserting the unit stays active can never pass in CI. Do NOT replace
-    # this with wait_for_unit("idrive.service").
+    # Unlike nix/tests/native.nix this daemon cannot stay up: the client's
+    # scheduler has `exit(0) if ($AppConfig::mcUser ne 'root')`. So a non-root
+    # service never runs a schedule, and Result=success is all there is.
     machine.succeed("systemctl start idrive.service")
     machine.wait_until_succeeds(
         "systemctl show idrive.service --property=Result --value | grep -qx success"
@@ -95,7 +94,7 @@ pkgs.testers.runNixOSTest {
     # non-root client resolved its service path into stateDir rather than
     # into the read-only store or its own cwd, and that the state directory
     # is genuinely writable by that user. The daemon alone cannot produce
-    # this: it exits before doing any work while no account is linked.
+    # this: it exits at once for any user but root.
     machine.succeed("test -d /var/lib/idrive/user_profile/idrive")
     machine.succeed("stat -c %U /var/lib/idrive/user_profile/idrive | grep -qx idrive")
 

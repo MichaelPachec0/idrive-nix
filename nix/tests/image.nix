@@ -38,11 +38,19 @@ pkgs.testers.runNixOSTest {
     # raising on idrive --cron's own exit code, which is not what this
     # assertion is about.
     result = machine.succeed(
-        "timeout 15 podman run --rm ${image} 2>&1; true"
+        "timeout 15 podman run --name idrive-cron ${image} 2>&1 || true"
     )
+    # Still running after 15 seconds is the point: a scheduler that could
+    # not take its lock would have exited by now.
+    machine.succeed("podman inspect -f '{{.State.Running}}' idrive-cron | grep -qx true")
+    machine.succeed("podman rm -f idrive-cron")
     assert "Launch the service using service manager" not in result, (
         f"cron symlink guard fired: {result}"
     )
+    # The scheduler exits 0 when it cannot open its lock, so only its output
+    # shows this. On a linked account it stops the container dead.
+    assert "idrivecron.lock" not in result, f"cron lock failed: {result}"
+    assert "flock()" not in result, f"cron lock failed: {result}"
 
     # The client must resolve its own state into the mounted volume, not
     # into the image's read-only store paths and not into its working

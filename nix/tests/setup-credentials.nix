@@ -34,20 +34,25 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.wait_for_unit("multi-user.target")
 
-    # The credentials cannot be real, so setup must fail. What is asserted
-    # is that it fails the RIGHT way: reaching the server and being
-    # rejected, rather than hanging on an unanswered prompt or reporting
-    # success against a profile it never created.
+    # The credentials cannot be real and the VM has no network, so setup
+    # must fail. What is asserted is that it fails the RIGHT way: after the
+    # real client took the password on the terminal and tried to connect.
     machine.wait_until_fails("systemctl is-active idrive-setup.service")
     machine.succeed("systemctl is-failed idrive-setup.service")
 
     out = machine.succeed("journalctl -u idrive-setup.service --no-pager")
 
-    # The failure has to name the credentials, which only happens once the
-    # answers were accepted in the right order and the request reached
-    # IDrive. A prompt-order break would fail the profile check instead.
-    assert "IDrive rejected the credentials" in out, (
+    # The client only shows the password prompt on a terminal. Piped input
+    # gets Invalid_arguments from the helper at this point instead, so this
+    # is what proves the pseudo-terminal does its job.
+    assert "answering: password" in out, (
+        f"setup did not reach the client's password prompt: {out}"
+    )
+    assert "Failed to authenticate" in out, (
         f"setup did not get as far as an authentication attempt: {out}"
+    )
+    assert "Invalid_arguments" not in out, (
+        f"the helper refused the login as if stdin were not a terminal: {out}"
     )
 
     # The packaging fault this would otherwise mask must not be present.
@@ -56,7 +61,7 @@ pkgs.testers.runNixOSTest {
     )
 
     # The password must never reach the journal, whatever the client
-    # printed. This is the whole reason it goes in on standard input.
+    # printed.
     assert "NotARealPassword123" not in out, (
         "the password leaked into the journal"
     )
@@ -93,7 +98,7 @@ pkgs.testers.runNixOSTest {
     )
 
 
-    # And it is genuinely read at runtime: the rejection names the account,
+    # And it is genuinely read at runtime: the failure names the account,
     # which it could only have learned from the file.
     assert "nobody@invalid.example" in out, (
         f"the username file was not read: {out}"
