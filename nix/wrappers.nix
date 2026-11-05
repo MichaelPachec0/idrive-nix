@@ -1,15 +1,12 @@
 # The argv-intercepting update-blocking wrapper and the idevsutil wrappers,
-# shared between nix/package.nix (3.14.0, built from the vendor .bin) and
-# nix/package-from-image.nix (3.8.0, extracted from the published image
-# layer). Both packages need byte-identical wrapper behavior; duplicating
-# this block in two derivations would let them drift, so it lives here once.
+# used by nix/package.nix.
 #
 # mkWrappers { root, vendorLib } returns a shell fragment meant to run as (or
 # be appended to) a derivation's postInstall. `root` and `vendorLib` are
-# spliced into the generated shell text verbatim, so callers may pass either
+# spliced into the generated shell text verbatim, so a caller may pass either
 # a literal store path or a shell-variable reference such as "$root" that is
-# already set earlier in the same build script (both existing callers set
-# root="$out/opt/IDriveForLinux" in their installPhase, and stdenv runs every
+# already set earlier in the same build script (nix/package.nix sets
+# root="$out/opt/IDriveForLinux" in its installPhase, and stdenv runs every
 # phase in one shell, so the variable is still in scope in postInstall).
 { lib, bash, coreutils, gnutar, gzip, procps, util-linux, unixtools, runCommand
 , curl, findutils, gawk, gnugrep, gnused, nettools, which }:

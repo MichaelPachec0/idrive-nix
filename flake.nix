@@ -26,12 +26,6 @@
           inherit idrive-client;
           idrive-image = pkgs.callPackage ./nix/image.nix { inherit idrive-client; };
           default = idrive-client;
-        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # 3.8.0 is exposed on amd64 only: its installer is recovered from
-          # a published image that exists for that architecture alone, see
-          # nix/package-from-image.nix for why that image is the only place
-          # a 3.8.0 installer still exists.
-          idrive-client_3_8_0 = pkgs.callPackage ./nix/package-from-image.nix { };
         });
 
       nixosModules.idrive = import ./nix/module.nix;
@@ -110,21 +104,6 @@
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
             idrive-image = self.packages.${system}.idrive-image;
-          };
-        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # idrive-client_3_8_0 only exists for x86_64-linux; see the same
-          # guard on the package itself in the packages output above.
-          package-layout-380 = pkgs.callPackage ./nix/tests/package-layout.nix {
-            idrive-client = self.packages.${system}.idrive-client_3_8_0;
-          };
-          package-runs-380 = pkgs.callPackage ./nix/tests/package-runs.nix {
-            idrive-client = self.packages.${system}.idrive-client_3_8_0;
-          };
-          package-no-selfupdate-380 = pkgs.callPackage ./nix/tests/package-no-selfupdate.nix {
-            idrive-client = self.packages.${system}.idrive-client_3_8_0;
-          };
-          package-cron-guard-380 = pkgs.callPackage ./nix/tests/package-cron-guard.nix {
-            idrive-client = self.packages.${system}.idrive-client_3_8_0;
           };
         });
     };
