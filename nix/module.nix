@@ -40,6 +40,96 @@ let
 
   permissionTools = pkgs.callPackage ./permission-tools.nix { };
 
+  restricted = cfg.backend == "native" && cfg.user == "root" && cfg.restrictRoot;
+  useView = cfg.backend == "native" && cfg.user != "root" && cfg.readAllFiles;
+  viewRoot = "/run/idrive-view";
+
+  # Being uid 0 passes the client's Perl `-r` check, which is what a non-root
+  # user with CAP_DAC_READ_SEARCH fails, and the capability does the real reads.
+  # Dropping capabilities alone is not a sandbox, though. uid 0 still owns the
+  # raw disks, /proc/sys, and systemd's private socket (a way out to full root),
+  # and it can signal any other root process. Each line closes one of those.
+  # AF_UNIX stays out for the sockets; the client does not need it.
+  rootSandbox = {
+    CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
+    PrivateDevices = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectClock = true;
+    RestrictSUIDSGID = true;
+    RestrictNamespaces = true;
+    LockPersonality = true;
+    PrivatePIDs = true;
+    RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_NETLINK" ];
+    # Hidden unless asked for: the sandbox would otherwise back up a path in
+    # backupPaths as empty, and report success.
+    InaccessiblePaths = map (p: "-${p}") (lib.filter
+      (hidden: !lib.any (p: lib.hasPrefix hidden p || lib.hasPrefix p hidden) cfg.backupPaths)
+      [ "/etc/shadow" "/etc/ssh" ]);
+  };
+
+  clientSandbox = {
+    NoNewPrivileges = true;
+    ProtectSystem = "strict";
+    ProtectHome = "read-only";
+    PrivateTmp = true;
+    ReadWritePaths = [ cfg.stateDir ] ++ map (p: "-${p}") cfg.writablePaths;
+  };
+
+  clientEnvironment = {
+    # uid 0's own home is read-only in here, and the client writes to $HOME.
+    HOME = cfg.stateDir;
+    TZ = cfg.timeZone;
+    LC_ALL = "en_US.UTF-8";
+  };
+
+  # What the watcher and the backup job share, so they see the same files.
+  jobUnit = {
+    environment = clientEnvironment;
+    unitConfig.WantsMountsFor = cfg.backupPaths ++ cfg.writablePaths;
+    serviceConfig = clientSandbox // {
+      User = cfg.user;
+      Group = cfg.group;
+    } // lib.optionalAttrs restricted rootSandbox
+    // lib.optionalAttrs useView {
+      BindReadOnlyPaths = map (p: "-${viewRoot}${p}:${p}") cfg.backupPaths;
+    } // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
+      SupplementaryGroups = cfg.supplementaryGroups;
+    } // lib.optionalAttrs (cfg.umask != null) {
+      UMask = cfg.umask;
+    };
+  };
+
+  backupJob = pkgs.callPackage ./backup-job.nix { } {
+    client = "${namedLauncher}/bin/idrive";
+    inherit (cfg) stateDir;
+    paths = cfg.backupPaths;
+  };
+
+  # The same limits for a client run by hand, which would otherwise have every
+  # capability root has.
+  restrictedLauncher = pkgs.writeShellApplication {
+    name = "idrive-restricted";
+    runtimeInputs = [ pkgs.systemd ];
+    text = ''
+      exec systemd-run --pty --wait --collect --quiet \
+        ${lib.escapeShellArgs (lib.concatLists (lib.mapAttrsToList
+          (name: value: [
+            "--property=${name}=${
+              if builtins.isBool value then lib.boolToString value
+              else if builtins.isList value then lib.concatStringsSep " " value
+              else value}"
+          ])
+          (clientSandbox // rootSandbox)))} \
+        ${lib.escapeShellArgs (lib.mapAttrsToList (name: value: "--setenv=${name}=${value}") clientEnvironment)} \
+        --setenv=TERM="''${TERM:-xterm}" \
+        ''${EDITOR:+--setenv=EDITOR="$EDITOR"} \
+        -- ${namedLauncher}/bin/idrive "$@"
+    '';
+  };
+
   automaticSetup =
     (cfg.username != null || cfg.usernameFile != null) && cfg.passwordFile != null;
 
@@ -196,8 +286,9 @@ in
         belongs to, on top of group above. Use this when the data under
         backupPaths is already readable by a group the service user can
         join; it grants exactly that group's read access and nothing more.
-        For data that is not already group-readable, see readAllFiles
-        below.
+        The file's own group has to be one of these: the client ignores
+        group grants made through an ACL. For anything else, see
+        readAllFiles below.
 
         These are applied twice, deliberately: to the unit as
         SupplementaryGroups, which covers the daemon, and (when createUser
@@ -214,23 +305,72 @@ in
       type = types.bool;
       default = false;
       description = ''
-        Applies only to backend = "native". When true, grants the service
-        the CAP_DAC_READ_SEARCH capability (via both AmbientCapabilities
-        and CapabilityBoundingSet), which lets it read every file and
-        search every directory on the system regardless of ownership or
-        mode, bypassing normal DAC read/search checks entirely. This is a
-        real privilege grant: with it, the service can read any file a
-        root process could read. It is narrower than running as root only
-        in that it grants no write, execute, or other capability, so a
-        compromised or malicious client still cannot modify, delete, or
-        execute anything outside what user/group/supplementaryGroups
-        already allow. It also does not guarantee access: mandatory access
-        control (SELinux, AppArmor) or a filesystem that denies the
-        capability outright can still block a read. Prefer
-        supplementaryGroups or a default ACL (see the README) when either
-        one covers the backup set; reach for this only when the set is
-        broad or unpredictable enough that neither is practical.
+        Applies only to backend = "native" with a non-root user, and needs
+        scheduledBackup. Gives the client a read-only view of backupPaths
+        in which it can read everything, while it stays an unprivileged
+        user.
+
+        The view is a bindfs mount made by a small root service with no
+        network, which never runs client code. It lives under a root-only
+        directory, and the backup units bind it over the real paths inside
+        their own mount namespace, so backup sets keep their real paths and
+        no other user can reach it. Nothing on the real files changes.
+
+        This replaces a CAP_DAC_READ_SEARCH grant, which did not work: the
+        client tests every path with Perl's `-r`, which reads the mode bits
+        and ignores capabilities and ACLs, so it skipped those files and
+        still reported success. A client run by hand gets no view; only the
+        units do.
       '';
+    };
+
+    restrictRoot = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Applies only to backend = "native" with user = "root". Runs the
+        client's units as uid 0 with CAP_DAC_READ_SEARCH as their only
+        capability, in a sandbox: it can read everything and write only
+        stateDir and writablePaths, and it has no raw devices, no way to
+        reach systemd or D-Bus, and no view of other processes.
+
+        Reading everything is still the point of it, so file contents remain
+        as exposed to the client as with plain root. /etc/shadow and /etc/ssh
+        are hidden unless backupPaths names them.
+
+        Setting this to false gives the client full root, which it needs
+        only to write into a writablePaths directory owned by someone else.
+        Run the client by hand under the same limits with idrive-restricted;
+        plain `sudo idrive` has every capability root has.
+      '';
+    };
+
+    scheduledBackup = {
+      enable = mkEnableOption ''
+        backups from a systemd timer instead of the client's scheduler, which
+        exits at once for any user but root. backupPaths becomes the backup
+        set, and replaces whatever the client holds. A run fails the unit when
+        the job failed, when no job ran, or when any path was left out, none of
+        which the client's exit code or job status shows
+      '';
+
+      schedule = mkOption {
+        type = types.str;
+        default = "daily";
+        example = "*-*-* 02:00:00";
+        description = "When to back up, as a systemd OnCalendar value.";
+      };
+
+      timeout = mkOption {
+        type = types.str;
+        default = "12h";
+        description = ''
+          How long a run may take. With the network down the client waits
+          forever rather than failing, so this is also how long such a run
+          holds on before the unit fails. Raise it if a first backup needs
+          longer.
+        '';
+      };
     };
 
     umask = mkOption {
@@ -262,8 +402,9 @@ in
       default = [ ];
       example = [ "/srv/data" "/home/alice/documents" ];
       description = ''
-        Paths the service may read. This does NOT choose what gets backed up:
-        the client keeps its backup set in its own state, set with
+        Paths the service may read. With scheduledBackup this is the backup
+        set. Without it this does NOT choose what gets backed up: the client
+        keeps its backup set in its own state, set with
         `idrive --edit-job-sets backup`. On the native backend this gives
         mount ordering and legacySourceLinks; on the container backend it
         mounts each path at /source/N.
@@ -580,9 +721,24 @@ in
           message = ''
             services.idrive.readAllFiles has no effect under backend =
             "container": the containerized client always runs as the
-            image's own root user, which already bypasses the checks this
-            option would grant a capability around. Unset it, or switch
-            backend to "native".
+            image's own root user, which can already read everything.
+            Unset it, or switch backend to "native".
+          '';
+        }
+        {
+          assertion = !(cfg.enable && useView && !cfg.scheduledBackup.enable);
+          message = ''
+            services.idrive.readAllFiles needs scheduledBackup.enable: the view
+            is bound into the backup units, and a non-root client has no other
+            unit that backs up.
+          '';
+        }
+        {
+          assertion = !(cfg.enable && cfg.scheduledBackup.enable
+            && (cfg.backend != "native" || cfg.backupPaths == [ ]));
+          message = ''
+            services.idrive.scheduledBackup needs backend = "native" and at
+            least one entry in backupPaths, which becomes the backup set.
           '';
         }
         {
@@ -682,18 +838,18 @@ in
           services.idrive.acceptTerms = true to accept them.
         ''
       ] ++ lib.optionals (cfg.acceptTerms && (cfg.userServices != [ ]
-        || (cfg.enable && cfg.backend == "native" && cfg.user != "root"))) [
+        || (cfg.enable && cfg.backend == "native" && cfg.user != "root"
+            && !cfg.scheduledBackup.enable))) [
         ''
           services.idrive: no scheduled backups will run. The client's
           scheduler exits at once for any user but root, so a non-root
           services.idrive.user and every entry in userServices report success
-          and do nothing. Only user = "root" runs a schedule.
+          and do nothing. Use user = "root" or scheduledBackup.enable.
         ''
       ] ++ lib.optionals (cfg.enable && cfg.backend == "native" && cfg.readAllFiles && cfg.user == "root") [
         ''
           services.idrive.readAllFiles is true but services.idrive.user is
-          "root": root already bypasses the DAC checks CAP_DAC_READ_SEARCH
-          would otherwise get around, so this option has no additional
+          "root", which can already read everything, so this option has no
           effect. This is harmless, just redundant.
         ''
       ];
@@ -709,7 +865,8 @@ in
     # Run interactive setup as the service user (root by default), the same
     # user the unit runs as: whoever runs the launcher first owns the files
     # it creates under stateDir.
-    environment.systemPackages = [ (lib.hiPrio namedLauncher) cfg.package ];
+    environment.systemPackages = [ (lib.hiPrio namedLauncher) cfg.package ]
+      ++ lib.optional restricted restrictedLauncher;
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
@@ -760,6 +917,8 @@ in
         LC_ALL = "en_US.UTF-8";
       } // lib.optionalAttrs (cfg.deviceName != null) {
         IDRIVE_DEVICE_NAME = cfg.deviceName;
+      } // lib.optionalAttrs restricted {
+        HOME = cfg.stateDir;
       };
 
       serviceConfig = {
@@ -771,7 +930,7 @@ in
         ExecStart = "${setup}/bin/idrive-setup";
       } // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
         SupplementaryGroups = cfg.supplementaryGroups;
-      };
+      } // lib.optionalAttrs restricted (clientSandbox // rootSandbox);
     };
 
     # Setup that failed on the network tries again without a reboot. A timer
@@ -812,6 +971,8 @@ in
         # going through the launcher, so the launcher's own wrapper does not
         # cover the daemon. The wrapper's shims read this at runtime.
         IDRIVE_DEVICE_NAME = cfg.deviceName;
+      } // lib.optionalAttrs restricted {
+        HOME = cfg.stateDir;
       };
 
       serviceConfig = {
@@ -855,37 +1016,15 @@ in
         ReadWritePaths = [ cfg.stateDir ] ++ map (p: "-${p}") cfg.writablePaths;
         # ReadOnlyPaths only marks these paths read-only inside the unit's
         # mount namespace; it grants no DAC access by itself. What actually
-        # lets a non-root user read files under these paths is
-        # SupplementaryGroups, readAllFiles below, or host-managed ACLs -
-        # see the README's permission model section.
+        # lets a non-root user read files under these paths is group
+        # ownership through SupplementaryGroups, or readAllFiles. An ACL does
+        # not: see the README's permission model section.
         ReadOnlyPaths = map (p: "-${p}") cfg.backupPaths;
       }
       // lib.optionalAttrs (cfg.supplementaryGroups != [ ]) {
         SupplementaryGroups = cfg.supplementaryGroups;
       }
-      # Not for root: root can already read everything, and this bounding set
-      # would strip the rest of its capabilities, which restores need to write
-      # into other users' directories and set ownership.
-      // lib.optionalAttrs (cfg.readAllFiles && cfg.user != "root") {
-        # CAP_DAC_READ_SEARCH bypasses file read and directory search
-        # permission checks without granting any write capability - the
-        # narrowest capability that gets a non-root backup agent "read
-        # everything". Both AmbientCapabilities and CapabilityBoundingSet
-        # are needed: AmbientCapabilities is what actually carries the
-        # capability into the non-root process's effective set (a
-        # non-root process's ambient set is otherwise always empty), and
-        # CapabilityBoundingSet has to include it too, or the ambient grant
-        # is dropped, since a capability cannot be ambient unless it is
-        # also in the bounding set. This is compatible with
-        # NoNewPrivileges=true above: unlike file capabilities or setuid,
-        # ambient capabilities do not need privilege escalation at exec
-        # time to take effect, and nix/tests/permissions.nix exercises this
-        # combination directly rather than assuming it: it reads a 0600
-        # root-owned file as the service user, and asserts the same read
-        # fails without the capability.
-        AmbientCapabilities = [ "CAP_DAC_READ_SEARCH" ];
-        CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
-      }
+      // lib.optionalAttrs restricted rootSandbox
       // lib.optionalAttrs (cfg.umask != null) {
         UMask = cfg.umask;
       }
@@ -905,6 +1044,90 @@ in
     })
     (mkIf (cfg.enable && cfg.acceptTerms) {
       environment.systemPackages = [ permissionTools ];
+    })
+    (mkIf (cfg.enable && cfg.acceptTerms && useView) {
+      # The only root part of a non-root setup. The mounts have to appear in
+      # the host's namespace, which rules out most sandboxing, so it gets no
+      # network and no capabilities beyond these.
+      # --force-user makes every file the service user's, which is how `-r`
+      # passes; the parent directory is what keeps everyone else out.
+      systemd.services.idrive-read-view = {
+        description = "Read-only view of the IDrive backup paths";
+        unitConfig.WantsMountsFor = cfg.backupPaths;
+        path = [ pkgs.bindfs pkgs.coreutils pkgs.fuse3 pkgs.util-linux ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          # Not PrivateNetwork: that needs a mount namespace, and the view has
+          # to land in the host's.
+          IPAddressDeny = "any";
+          RestrictAddressFamilies = [ "AF_UNIX" ];
+          NoNewPrivileges = true;
+          CapabilityBoundingSet = [ "CAP_SYS_ADMIN" "CAP_DAC_READ_SEARCH" ];
+        };
+        script = ''
+          install -d -m 0700 ${viewRoot}
+          for path in ${lib.escapeShellArgs cfg.backupPaths}; do
+            target=${viewRoot}$path
+            mountpoint -q "$target" && continue
+            if [ ! -e "$path" ]; then
+              echo "idrive-read-view: $path is missing, skipped" >&2
+              continue
+            fi
+            mkdir -p "$target"
+            bindfs -o ro,allow_other \
+              --force-user=${lib.escapeShellArg cfg.user} --force-group=${lib.escapeShellArg cfg.group} \
+              --perms=u+rX,go-rwx "$path" "$target"
+          done
+        '';
+        preStop = ''
+          for path in ${lib.escapeShellArgs cfg.backupPaths}; do
+            umount -l ${viewRoot}"$path" || true
+          done
+        '';
+      };
+    })
+    (mkIf (cfg.enable && cfg.acceptTerms && cfg.scheduledBackup.enable) {
+      systemd.services.idrive-backup = lib.recursiveUpdate jobUnit {
+        description = "IDrive backup";
+        after = [ "network-online.target" "idrive-setup.service" ]
+          ++ lib.optional (cfg.user != "root") "idrive-watcher.service"
+          ++ lib.optional useView "idrive-read-view.service"
+          ++ lib.optional (cfg.permissionManifest.paths != [ ]) "idrive-permission-manifest.service";
+        wants = [ "network-online.target" ]
+          ++ lib.optional (cfg.user != "root") "idrive-watcher.service"
+          ++ lib.optional (cfg.permissionManifest.paths != [ ]) "idrive-permission-manifest.service";
+        requires = lib.optional useView "idrive-read-view.service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${backupJob}/bin/idrive-backup-job";
+          TimeoutStartSec = cfg.scheduledBackup.timeout;
+        };
+      };
+
+      systemd.timers.idrive-backup = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = cfg.scheduledBackup.schedule;
+          Persistent = true;
+        };
+      };
+
+      # As root the daemon starts this itself. Without it a non-root backup can
+      # miss changes and still report success.
+      systemd.services.idrive-watcher = mkIf (cfg.user != "root") (lib.recursiveUpdate jobUnit {
+        description = "IDrive change watcher";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "idrive-setup.service" ] ++ lib.optional useView "idrive-read-view.service";
+        bindsTo = lib.optional useView "idrive-read-view.service";
+        unitConfig.ConditionPathExistsGlob =
+          "${cfg.stateDir}/user_profile/${cfg.user}/*/CONFIGURATION_FILE";
+        serviceConfig = {
+          ExecStart = "${namedLauncher}/bin/idrive --utilities --watcher-service";
+          Restart = "on-failure";
+          RestartSec = 30;
+        };
+      });
     })
     (mkIf (cfg.enable && cfg.acceptTerms && cfg.permissionManifest.paths != [ ]) {
       systemd.services.idrive-permission-manifest = {

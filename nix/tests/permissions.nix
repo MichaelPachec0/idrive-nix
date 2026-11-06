@@ -9,9 +9,9 @@ pkgs.testers.runNixOSTest {
 
     # A group the service user joins, owning data that is group-readable,
     # and a file readable only by root. The first is what supplementaryGroups
-    # is for; the second is what nothing but CAP_DAC_READ_SEARCH (or root)
-    # can read.
+    # is for; the second is what readAllFiles is for.
     users.groups.backupdata = { };
+    users.users.alice = { isNormalUser = true; };
 
     systemd.tmpfiles.rules = [
       "d /srv/shared 0750 root backupdata -"
@@ -29,6 +29,7 @@ pkgs.testers.runNixOSTest {
       createUser = true;
       supplementaryGroups = [ "backupdata" ];
       readAllFiles = true;
+      scheduledBackup.enable = true;
       umask = "0077";
       backupPaths = [ "/srv/shared" "/srv/secret" ];
       timeZone = "Etc/UTC";
@@ -67,11 +68,9 @@ pkgs.testers.runNixOSTest {
     machine.succeed(
         "systemctl show idrive.service -p SupplementaryGroups --value | grep -qw backupdata"
     )
-    machine.succeed(
-        "systemctl show idrive.service -p AmbientCapabilities --value"
-        " | grep -qw cap_dac_read_search"
-    )
     machine.succeed("systemctl show idrive.service -p UMask --value | grep -qx 0077")
+    machine.succeed("systemctl show idrive-backup.service -p UMask --value | grep -qx 0077")
+    machine.succeed("systemctl list-timers --all | grep -q idrive-backup.timer")
 
     # The state directory is owned by the service user, not root, so the
     # prepare step and the client can both write it.
@@ -98,47 +97,51 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test -d /var/lib/idrive/user_profile/idrive")
     machine.succeed("stat -c %U /var/lib/idrive/user_profile/idrive | grep -qx idrive")
 
-    # Now the part that matters: prove the capability, rather than trusting
-    # that a unit property implies an effect.
+    # Now the part that matters: prove the view, rather than trusting that a
+    # unit property implies an effect.
     #
-    # Baseline. As the service user with no capability, a 0600 root-owned
-    # file is unreadable and a 0700 root-owned directory is unsearchable.
-    # If these ever start succeeding, the test below proves nothing, because
-    # the read would have worked without the capability anyway.
+    # Baseline. As the service user outside the units, a 0600 root-owned file
+    # is unreadable and a 0700 root-owned directory is unsearchable. If these
+    # ever start succeeding, the test below proves nothing.
     machine.fail("runuser -u idrive -- cat /srv/secret/data")
     machine.fail("runuser -u idrive -- ls /srv/secret")
 
-    # Same user, same file, with CAP_DAC_READ_SEARCH ambient, and with
-    # NoNewPrivileges=yes set exactly as the real unit sets it. This is the
-    # combination the module's comment claims works; assert it rather than
-    # assuming ambient capabilities survive NoNewPrivileges.
-    granted = machine.succeed(
-        "systemd-run --wait --pipe --quiet"
-        " --uid=idrive"
-        " --property=AmbientCapabilities=CAP_DAC_READ_SEARCH"
-        " --property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH"
-        " --property=NoNewPrivileges=yes"
-        " -- cat /srv/secret/data"
-    )
-    assert "root-only" in granted, (
-        f"CAP_DAC_READ_SEARCH did not grant the read: {granted!r}"
+    machine.succeed("systemctl start idrive-read-view.service")
+    in_view = (
+        "systemd-run --wait --pipe --quiet --uid=idrive"
+        " --property=BindReadOnlyPaths=/run/idrive-view/srv/secret:/srv/secret"
+        " --property=NoNewPrivileges=yes -- "
     )
 
-    # The capability grants read and search, and no write. A backup agent
-    # needs exactly the first and must not have the second, so assert the
-    # absence too: this is the whole argument for preferring it over root.
-    machine.fail(
-        "systemd-run --wait --pipe --quiet"
-        " --uid=idrive"
-        " --property=AmbientCapabilities=CAP_DAC_READ_SEARCH"
-        " --property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH"
-        " --property=NoNewPrivileges=yes"
-        " -- sh -c 'echo tampered > /srv/secret/data'"
+    # The client's own test is Perl -r, which reads the mode bits. cat alone is
+    # not enough: a capability passes cat and fails this.
+    assert "root-only" in machine.succeed(in_view + "cat /srv/secret/data")
+    machine.succeed(
+        in_view + "${pkgs.perl}/bin/perl -e 'exit(-r $ARGV[0] ? 0 : 1)' /srv/secret/data"
     )
+
+    # Reading is all it gives.
+    machine.fail(in_view + "sh -c 'echo tampered > /srv/secret/data'")
     machine.succeed("grep -qx root-only /srv/secret/data")
 
-    # supplementaryGroups covers the group-readable case on its own, with no
-    # capability involved.
+    # It changes nothing on the real file, and nobody else can reach it, the
+    # service user included: only the units have it, through the bind.
+    assert machine.succeed("stat -c '%a %U' /srv/secret/data").strip() == "600 root"
+    machine.fail("runuser -u alice -- cat /run/idrive-view/srv/secret/data")
+    machine.fail("runuser -u idrive -- cat /run/idrive-view/srv/secret/data")
+
+    # An unlinked machine fails the job instead of reporting success.
+    machine.fail("systemctl start idrive-backup.service")
+    journal = machine.succeed("journalctl -u idrive-backup -b --no-pager -o cat")
+    assert "expected one linked account" in journal, journal
+
+    # The bind reached the real unit, and the client's own view of the set.
+    machine.succeed(
+        "systemctl show idrive-backup.service -p BindReadOnlyPaths --value"
+        " | grep -q /run/idrive-view/srv/secret"
+    )
+
+    # supplementaryGroups covers the group-readable case on its own.
     shared = machine.succeed("runuser -u idrive -- cat /srv/shared/groupreadable")
     assert "group-readable" in shared, (
         f"supplementary group did not grant the read: {shared!r}"

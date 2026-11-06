@@ -174,11 +174,11 @@ who owns them, which is what you want for a server or a machine backed up
 as a unit. Reading other users' files is the hard part; see the permission
 model section below.
 
-**Scheduled backups need root.** The client's scheduler exits at once for any
-user but root: its source has `exit(0) if ($AppConfig::mcUser ne 'root')`. So
-with a non-root `services.idrive.user`, or with `userServices`, the unit exits
-cleanly and reports success, and no schedule ever runs. Evaluation warns about
-this. Only the default `user = "root"` runs scheduled backups.
+**Scheduled backups need root or `scheduledBackup`.** The client's scheduler
+exits at once for any user but root, so a non-root service without
+`scheduledBackup.enable` starts cleanly, reports success, and no schedule ever
+runs. Evaluation warns about this. `userServices` has no timer yet, so the same
+applies to it.
 
 **One account per user.** `services.idrive.userServices = [ "alice" ]`, a
 systemd user service per listed user. Each gets their own iDrive account,
@@ -192,8 +192,8 @@ services.idrive = {
 ```
 
 The per-user shape needs no privilege at all: each user's own uid already
-owns everything they back up, so none of `readAllFiles`,
-`supplementaryGroups`, or ACLs applies, and restoring into their own home
+owns everything they back up, so neither `readAllFiles` nor
+`supplementaryGroups` applies, and restoring into their own home
 needs no `writablePaths` entry. If your situation is "a few people, each
 backing up their own files", this is the simpler and safer shape.
 
@@ -391,51 +391,75 @@ under systemd's `ReadOnlyPaths`, which only marks them read-only inside the
 unit's own mount namespace. Ordinary Unix permissions still decide what the
 service uid can open. Listing a path there does not make it readable.
 
-Three ways to actually grant read access, in increasing order of privilege:
+The client tests each path with Perl's `-r` before reading it. That test
+looks only at the mode bits against the owner and the file's own group. It
+ignores ACLs and capabilities, even when a real read would work. A path that
+fails it is skipped, and the job still says Success: a file gets one
+`[INFORMATION]` line in the log, and a directory gets nothing at all. So a
+`setfacl` grant, or `CAP_DAC_READ_SEARCH`, looks right and backs up nothing.
 
-**1. `supplementaryGroups`** - use when the data is already group-readable.
+Three setups that do work:
+
+**1. `supplementaryGroups`** - use when the data already belongs to a group
+the service can join.
 
 ```nix
 services.idrive = {
   user = "idrive";
   group = "idrive";
   supplementaryGroups = [ "media" ];
+  backupPaths = [ "/srv/media" ];
+  scheduledBackup.enable = true;
 };
 ```
 
-Grants exactly that group's access and nothing else. This is the tightest
-option, and the one to reach for first.
+The group has to be the file's own group with read set, so `chgrp` works and
+`setfacl` does not. This is the tightest option, but a new file with the wrong
+group is unreadable until someone fixes it. `scheduledBackup` turns that into a
+failed unit.
 
-**2. Default ACLs** - use when the data is not group-readable but the set of
-paths is known and stable. This is host state the module does not manage:
-
-```
-setfacl -R -m u:idrive:rX /srv/data
-setfacl -R -d -m u:idrive:rX /srv/data
-```
-
-The second line sets a *default* ACL so files created later inherit it.
-Without it, anything added after you run this is unreadable again.
-
-**3. `readAllFiles = true`** - use when the backup set is broad or
-unpredictable enough that neither of the above is practical.
+**2. `readAllFiles = true`** - non-root client that reads everything under
+`backupPaths`.
 
 ```nix
 services.idrive = {
   user = "idrive";
   group = "idrive";
   readAllFiles = true;
+  backupPaths = [ "/srv/data" ];
+  scheduledBackup.enable = true;
 };
 ```
 
-This grants the `CAP_DAC_READ_SEARCH` capability, which bypasses file read
-and directory search permission checks system-wide. Be clear-eyed about it:
-the service can then read any file root could read. What it buys over
-running as root is that it grants no write, execute, or other capability, so
-the client still cannot modify or delete anything outside what its own
-user, group, and supplementary groups allow. It is not a guarantee of
-access either: SELinux, AppArmor, or a filesystem that refuses the
-capability can still deny a read.
+A root service with no network, `idrive-read-view`, mounts a read-only `bindfs`
+view of each path under a root-only directory. The backup units bind it over
+the real path in their own mount namespace, so the client sees `/srv/data`,
+owns everything in it, and can change none of it. The client itself never runs
+as root, and the real files are not touched. Only the units get the view, so a
+client run by hand sees normal permissions.
+
+**3. `user = "root"`** - the default, with `restrictRoot` on.
+
+The units run as uid 0 with `CAP_DAC_READ_SEARCH` as their only capability:
+they can read everything and write only `stateDir` and `writablePaths`. A
+sandbox closes what uid 0 keeps without capabilities: raw disks, `/proc/sys`,
+systemd and D-Bus sockets, and signals to other root processes. The client's
+own scheduler works here. Run it by hand as `sudo idrive-restricted`; plain
+`sudo idrive` has full root. Set `restrictRoot = false` only if the client has
+to write into a `writablePaths` directory owned by someone else.
+
+Every setup can read your files and send them to IDrive; that is the job. What
+differs is what a compromised client can do beyond that.
+
+### Scheduled backups
+
+`scheduledBackup.enable` adds a systemd timer. `backupPaths` becomes the backup
+set, and replaces whatever the client holds if either side changes. Each run
+checks every path with the same `-r` test the client uses, runs the job, and
+reads the log it leaves. The unit fails if the job failed, if no job ran, or if
+any path was left out, none of which the client's exit code shows. With the
+network down the client waits instead of failing, so `scheduledBackup.timeout`
+is what ends such a run.
 
 `createUser` defaults to true, so setting `user` to something other than
 `root` makes the module define that system account for you. Set it to false

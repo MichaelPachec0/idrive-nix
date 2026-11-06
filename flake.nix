@@ -89,6 +89,11 @@
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
           };
+          backup-job = pkgs.callPackage ./nix/tests/backup-job.nix { };
+          restricted-root = pkgs.callPackage ./nix/tests/restricted-root.nix {
+            nixosModule = self.nixosModules.idrive;
+            inherit idrive-client;
+          };
           permission-manifest = pkgs.callPackage ./nix/tests/permission-manifest.nix {
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
