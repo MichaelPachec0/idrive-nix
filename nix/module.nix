@@ -38,6 +38,8 @@ let
     ${pkgs.coreutils}/bin/ln -sfn ${lib.escapeShellArg "${cfg.stateDir}/.cron.lock"} /run/idrivecron.lock
   '';
 
+  permissionTools = pkgs.callPackage ./permission-tools.nix { };
+
   automaticSetup =
     (cfg.username != null || cfg.usernameFile != null) && cfg.passwordFile != null;
 
@@ -266,6 +268,38 @@ in
         mount ordering and legacySourceLinks; on the container backend it
         mounts each path at /source/N.
       '';
+    };
+
+    permissionManifest = {
+      paths = mkOption {
+        type = types.listOf types.path;
+        default = [ ];
+        example = [ "/srv/data" ];
+        description = ''
+          Directories to record modes, owners, ACLs and symlinks for. The
+          client stores none of these: a restored file comes back 0777
+          root:root, and a symlink does not come back.
+
+          Each path gets .idrive-perms.acl and .idrive-links written inside
+          it, so a directory in the backup set carries its own record. This
+          does not add anything to the backup set, which is set with
+          `idrive --edit-job-sets backup`.
+
+          After a restore, run `idrive-restore-permissions` as root on the
+          restored directory.
+        '';
+      };
+
+      schedule = mkOption {
+        type = types.str;
+        default = "hourly";
+        example = "*-*-* 01:30:00";
+        description = ''
+          When to rewrite the records, as a systemd OnCalendar value. A backup
+          carries the record from the last run, so run this before the
+          backup, and anything newer than that record stays 0777 on restore.
+        '';
+      };
     };
 
     username = mkOption {
@@ -868,6 +902,34 @@ in
         StateDirectoryMode = "0700";
       };
     };
+    })
+    (mkIf (cfg.enable && cfg.acceptTerms) {
+      environment.systemPackages = [ permissionTools ];
+    })
+    (mkIf (cfg.enable && cfg.acceptTerms && cfg.permissionManifest.paths != [ ]) {
+      systemd.services.idrive-permission-manifest = {
+        description = "Record file permissions for IDrive restores";
+        serviceConfig = {
+          Type = "oneshot";
+          # Root because it has to read every file's metadata and write into
+          # each tree. The records go to the service user, who backs them up.
+          ExecStart = lib.escapeShellArgs ([
+            "${permissionTools}/bin/idrive-save-permissions"
+            "--owner"
+            "${cfg.user}:${cfg.group}"
+          ] ++ cfg.permissionManifest.paths);
+          PrivateTmp = true;
+          NoNewPrivileges = true;
+        };
+      };
+
+      systemd.timers.idrive-permission-manifest = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = cfg.permissionManifest.schedule;
+          Persistent = true;
+        };
+      };
     })
     (mkIf (cfg.enable && cfg.acceptTerms && cfg.backend == "container") {
       virtualisation.oci-containers = {

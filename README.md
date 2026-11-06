@@ -443,33 +443,46 @@ if you manage the account yourself.
 
 ### Restore is the weak direction
 
-Reading is solvable. Writing back is not, and you should decide this before
-you need a restore rather than during one.
+The client stores file content and mtime, and nothing else. This was tested
+against the real service, running as root:
 
-Restored files are created by the service's uid, with the unit's umask. Two
-consequences:
+- A file or directory the restore creates comes back `0777 root:root`, in any
+  location. A `0600` file is world readable and writable until you fix it.
+- A file that already exists keeps its current mode and owner, so a restore
+  never repairs a mode that has changed.
+- Symlinks do not come back. Hardlinks come back as separate files.
+- Only the last part of the path is kept: `/srv/data` restored to location `X`
+  lands in `X/data`. Its original location is therefore `/srv`, not `/`.
 
-- **Ownership.** They come back owned by the service user, not by whoever
-  owned them originally. Restoring the original ownership requires
-  `CAP_CHOWN` plus `CAP_FOWNER` to write into directories the service does
-  not own, and granting those amounts to rebuilding root. The capability
-  split stops buying you anything at that point.
-- **Modes.** systemd's default umask is `0022`, so a file that was `0600`
-  can come back `0644`, readable by anyone who can reach the restore
-  location. `services.idrive.umask` sets the unit's `UMask` if you want to
-  pin this; it defaults to null, meaning the module does not change
-  restore behavior on its own.
+`services.idrive.permissionManifest` records what the client does not:
 
-The practical recommendations:
+```nix
+services.idrive.permissionManifest = {
+  paths = [ "/srv/data" ];
+  schedule = "*-*-* 01:30:00"; # before your backup
+};
+```
 
-- Run restores as root (`user = "root"`, the default) if you need ownership
-  and modes preserved.
-- Or restore to a staging directory the service user owns, then move the
-  files into place and fix ownership yourself, where you can see exactly
-  what you are changing.
-- Either way, do a test restore of a small path before you rely on this, and
-  check the resulting owner and mode. That is the only way to find out what
-  the client actually preserves in your setup.
+Each path gets `.idrive-perms.acl` and `.idrive-links` written inside it, so
+they are backed up with the directory, as long as the directory is in your
+backup set. After a restore:
+
+```
+sudo idrive-restore-permissions /var/lib/idrive/user_profile/root/<account>/Restore_Data/data
+```
+
+Then move the directory into place, for example with `cp -a`. Keep the restore
+in the default location until this has run: it is inside the `0700` state
+directory, so nobody else can reach the `0777` files in the meantime.
+
+The tool stops if the directory is not under one only root can enter, because
+a manifest another user could have edited can hand them any file when applied
+as root. `--force` overrides that, for a machine nobody else logs in to. It
+leaves out setuid, setgid and sticky bits unless given `--keep-special`, and
+lists what it left out. Anything newer than the last record stays `0777`; the
+tool lists those paths and exits non-zero. Hardlinks are not rebuilt.
+
+Do a test restore of a small path before you rely on any of this.
 
 `supplementaryGroups`, `readAllFiles`, `umask`, and `createUser` apply to
 `backend = "native"` only. The containerized client runs as the image's own

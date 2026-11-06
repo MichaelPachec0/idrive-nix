@@ -89,6 +89,10 @@
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
           };
+          permission-manifest = pkgs.callPackage ./nix/tests/permission-manifest.nix {
+            nixosModule = self.nixosModules.idrive;
+            inherit idrive-client;
+          };
           setup-credentials = pkgs.callPackage ./nix/tests/setup-credentials.nix {
             nixosModule = self.nixosModules.idrive;
             inherit idrive-client;
