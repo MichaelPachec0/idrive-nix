@@ -10,5 +10,9 @@
   "3.16.0": {
     "url": "https://www.idrivedownloads.com/downloads/linux/linux-bin/idriveforlinux.bin?ctag=093020261",
     "hash": "sha256-oQe8bz5lJrvNuPk+WPWy/zhmuZyzZCe9hV6TRBVZML4="
+  },
+  "3.17.1": {
+    "url": "https://www.idrivedownloads.com/downloads/linux/linux-bin/idriveforlinux.bin?ctag=11192026",
+    "hash": "sha256-UnLzpvBGd515XBJUHZ5hMBEWjlyxNgOT/Uu+yrKQV0Y="
   }
 }
